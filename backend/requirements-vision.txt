@@ -1,0 +1,4 @@
+# Optional Phase 2B dependencies. Install only after reviewing the model license
+# and choosing a compatible CPU or CUDA PyTorch build.
+torch>=2.2.0
+ultralytics>=8.3.0
