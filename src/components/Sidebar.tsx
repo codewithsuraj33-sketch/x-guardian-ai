@@ -7,6 +7,10 @@ import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard,
   Camera,
+  Factory,
+  Users,
+  AlertTriangle,
+  BarChart3,
   ShieldCheck,
   History,
   Settings,
@@ -18,6 +22,10 @@ import { useState } from 'react';
 const iconMap = {
   LayoutDashboard,
   Camera,
+  Factory,
+  Users,
+  AlertTriangle,
+  BarChart3,
   History,
   Settings,
 } as const;
@@ -25,6 +33,10 @@ const iconMap = {
 const NAV_ITEMS = [
   { path: '/', label: 'Dashboard', icon: 'LayoutDashboard' as const },
   { path: '/cameras', label: 'Cameras', icon: 'Camera' as const },
+  { path: '/factory', label: 'Virtual Factory', icon: 'Factory' as const },
+  { path: '/workers', label: 'Personnel', icon: 'Users' as const },
+  { path: '/incidents', label: 'Incidents Log', icon: 'AlertTriangle' as const },
+  { path: '/analytics', label: 'Analytics', icon: 'BarChart3' as const },
   { path: '/history', label: 'History', icon: 'History' as const },
   { path: '/settings', label: 'Settings', icon: 'Settings' as const },
 ];

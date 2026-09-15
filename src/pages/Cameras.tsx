@@ -1,9 +1,10 @@
 import { ChangeEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Camera as CameraIcon, Image as ImageIcon, RotateCcw, Square, Upload, Video } from 'lucide-react';
-import { CameraErrorInfo, CameraFacingMode, CameraStreamState, Detection, PersonSafety, RiskLevel, VisionFrameResult } from '../types';
+import { CameraErrorInfo, CameraFacingMode, CameraStreamState, Detection, IncidentStatus, PersonSafety, RiskLevel, VisionFrameResult } from '../types';
 import { checkBackendHealth, createInferenceController, resetInferenceSession, sendFrameForInference } from '../services/visionService';
 import { isCameraSupported, startCameraStream, stopCameraStream } from '../services/cameraService';
 import { useSafety } from '../context/SafetyContext';
+import { useFactory } from '../context/FactoryContext';
 
 type InputMode = 'LIVE_CAMERA' | 'RECORDED_VIDEO' | 'IMAGE';
 type InferenceState = 'IDLE' | 'ANALYZING' | 'READY' | 'STOPPED' | 'ERROR';
@@ -12,9 +13,9 @@ function displayLabel(detection: Detection): string {
   return detection.className.replaceAll('_', ' ');
 }
 
-const requiredPpe = ['Helmet', 'Vest', 'Boots', 'Glove'];
+const requiredPpe = ['Helmet', 'Vest', 'Boots', 'Glove', 'Mask'];
 
-function PersonComplianceOverlay({ person }: { person: PersonSafety }) {
+function PersonComplianceOverlay({ person, style }: { person: PersonSafety; style?: React.CSSProperties }) {
   const violation = person.violationTypes.length > 0;
   const compliant = person.visible && requiredPpe.every((name) => ['CONFIRMED', 'COMPLIANT'].includes(person.ppeStates[name]));
   const borderClass = violation ? 'border-rose-500' : compliant ? 'border-emerald-400' : 'border-amber-400';
@@ -22,8 +23,15 @@ function PersonComplianceOverlay({ person }: { person: PersonSafety }) {
   const stateLabel = violation ? 'PPE VIOLATION' : compliant ? 'PPE COMPLIANT' : 'PPE STATUS UNCERTAIN';
   const missing = person.violationTypes.map((violationType) => violationType.replace(/^Missing /, ''));
 
-  return <div className={`pointer-events-none absolute border-2 ${borderClass}`} style={{ left: `${person.boundingBox.x * 100}%`, top: `${person.boundingBox.y * 100}%`, width: `${person.boundingBox.width * 100}%`, height: `${person.boundingBox.height * 100}%` }}>
-    <div className={`absolute left-0 top-0 min-w-max ${labelClass} px-1.5 py-1 text-[10px] font-semibold text-slate-950`}>
+  const defaultStyle: React.CSSProperties = {
+    left: `${person.boundingBox.x * 100}%`,
+    top: `${person.boundingBox.y * 100}%`,
+    width: `${person.boundingBox.width * 100}%`,
+    height: `${person.boundingBox.height * 100}%`,
+  };
+
+  return <div className={`pointer-events-none absolute border-2 ${borderClass}`} style={style || defaultStyle}>
+    <div className={`absolute left-0 top-0 min-w-max ${labelClass} px-1.5 py-1 text-[10px] font-semibold text-slate-950 shadow-md`}>
       <div>ID {person.trackId} | {stateLabel}</div>
       <div>{requiredPpe.map((name) => `${['CONFIRMED', 'COMPLIANT'].includes(person.ppeStates[name]) ? '✓' : person.ppeStates[name] === 'VIOLATION' ? '✗' : '•'} ${name}`).join('  ')}</div>
       {violation && <div>Missing: {missing.join(', ')}</div>}
@@ -33,6 +41,7 @@ function PersonComplianceOverlay({ person }: { person: PersonSafety }) {
 
 export default function Cameras() {
   const { addIncident, setCameraOperationalStatus } = useSafety();
+  const { dispatch: factoryDispatch } = useFactory();
   const [mode, setMode] = useState<InputMode>('LIVE_CAMERA');
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [streamState, setStreamState] = useState(CameraStreamState.IDLE);
@@ -47,27 +56,118 @@ export default function Cameras() {
   const [result, setResult] = useState<VisionFrameResult | null>(null);
   const [detectionActive, setDetectionActive] = useState(false);
   const [imageFile, setImageFile] = useState<File | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+
+  const [mediaLayout, setMediaLayout] = useState({ width: 0, height: 0, offsetX: 0, offsetY: 0 });
+
+  const updateMediaLayout = useCallback(() => {
+    const container = containerRef.current;
+    const media = mode === 'IMAGE' ? imageRef.current : videoRef.current;
+    if (!container) return;
+
+    const cWidth = container.clientWidth;
+    const cHeight = container.clientHeight;
+    const mWidth = (media instanceof HTMLVideoElement ? media.videoWidth : (media as HTMLImageElement)?.naturalWidth) || cWidth;
+    const mHeight = (media instanceof HTMLVideoElement ? media.videoHeight : (media as HTMLImageElement)?.naturalHeight) || cHeight;
+
+    if (!mWidth || !mHeight || !cWidth || !cHeight) {
+      setMediaLayout({ width: cWidth, height: cHeight, offsetX: 0, offsetY: 0 });
+      return;
+    }
+
+    const mediaAspect = mWidth / mHeight;
+    const containerAspect = cWidth / cHeight;
+
+    let renderWidth = cWidth;
+    let renderHeight = cHeight;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (containerAspect > mediaAspect) {
+      renderHeight = cHeight;
+      renderWidth = renderHeight * mediaAspect;
+      offsetX = (cWidth - renderWidth) / 2;
+    } else {
+      renderWidth = cWidth;
+      renderHeight = renderWidth / mediaAspect;
+      offsetY = (cHeight - renderHeight) / 2;
+    }
+
+    setMediaLayout({ width: renderWidth, height: renderHeight, offsetX, offsetY });
+  }, [mode]);
+
+  useEffect(() => {
+    updateMediaLayout();
+    window.addEventListener('resize', updateMediaLayout);
+    return () => window.removeEventListener('resize', updateMediaLayout);
+  }, [updateMediaLayout, stream, videoUrl, imageUrl]);
+
+  const getOverlayStyle = useCallback(
+    (bbox: { x: number; y: number; width: number; height: number }): React.CSSProperties => {
+      const isMirrored = mode === 'LIVE_CAMERA' && facingMode === 'user';
+      const displayX = isMirrored ? 1 - bbox.x - bbox.width : bbox.x;
+
+      if (!mediaLayout.width || !mediaLayout.height) {
+        return {
+          left: `${displayX * 100}%`,
+          top: `${bbox.y * 100}%`,
+          width: `${bbox.width * 100}%`,
+          height: `${bbox.height * 100}%`,
+        };
+      }
+
+      return {
+        left: `${mediaLayout.offsetX + displayX * mediaLayout.width}px`,
+        top: `${mediaLayout.offsetY + bbox.y * mediaLayout.height}px`,
+        width: `${bbox.width * mediaLayout.width}px`,
+        height: `${bbox.height * mediaLayout.height}px`,
+      };
+    },
+    [facingMode, mediaLayout, mode]
+  );
 
   const handleInferenceResult = useCallback((nextResult: VisionFrameResult) => {
     setResult(nextResult);
     setInferenceState('READY');
     setInferenceError(null);
-    nextResult.incidents?.forEach((incident) => addIncident({
-      incidentId: incident.incidentId,
-      workerId: `TRACK-${incident.trackId}`,
-      trackId: incident.trackId,
-      violation: incident.violationType,
-      severity: RiskLevel.HIGH,
-      cameraId: incident.cameraId,
-      zoneId: incident.zone,
-      confidence: incident.confidence,
-      frameNumber: incident.frameNumber,
-      evidenceImage: incident.evidenceImage,
-    }));
-  }, [addIncident]);
+    nextResult.incidents?.forEach((incident) => {
+      addIncident({
+        incidentId: incident.incidentId,
+        workerId: `TRACK-${incident.trackId}`,
+        trackId: incident.trackId,
+        violation: incident.violationType,
+        severity: RiskLevel.HIGH,
+        cameraId: incident.cameraId,
+        zoneId: incident.zone,
+        confidence: incident.confidence,
+        frameNumber: incident.frameNumber,
+        evidenceImage: incident.evidenceImage,
+      });
+      factoryDispatch({
+        type: 'ADD_INCIDENTS',
+        incidents: [
+          {
+            incidentId: incident.incidentId,
+            workerId: `TRACK-${incident.trackId}`,
+            trackId: incident.trackId,
+            cameraId: incident.cameraId,
+            zoneId: incident.zone || 'ZONE-01',
+            violation: incident.violationType,
+            severity: RiskLevel.HIGH,
+            timestamp: incident.timestamp,
+            status: IncidentStatus.OPEN,
+            confidence: incident.confidence,
+            frameNumber: incident.frameNumber,
+            evidenceImage: incident.evidenceImage,
+          },
+        ],
+      });
+    });
+  }, [addIncident, factoryDispatch]);
 
   useEffect(() => {
     let mounted = true;
@@ -168,10 +268,10 @@ export default function Cameras() {
     <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-4">{([['LIVE_CAMERA', 'Live Camera', CameraIcon], ['RECORDED_VIDEO', 'Recorded Video', Video], ['IMAGE', 'Image', ImageIcon]] as const).map(([value, label, Icon]) => <button key={value} onClick={() => switchMode(value)} className={`inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-semibold ${mode === value ? 'border-blue-500 bg-blue-600 text-white' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'}`}><Icon size={16} />{label}</button>)}</div>
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(280px,0.8fr)]">
       <section className="overflow-hidden rounded-xl border border-slate-800 bg-black">
-        <div className="relative flex aspect-video items-center justify-center bg-slate-950">
-          {mode === 'LIVE_CAMERA' && <div className="relative h-full w-full"><video ref={videoRef} autoPlay playsInline muted className={`h-full w-full object-contain ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`} />{result?.detections.map((detection) => <div key={detection.detectionId} className="pointer-events-none absolute border-2 border-amber-400" style={{ left: `${detection.boundingBox.x * 100}%`, top: `${detection.boundingBox.y * 100}%`, width: `${detection.boundingBox.width * 100}%`, height: `${detection.boundingBox.height * 100}%` }}><span className="absolute left-0 top-0 whitespace-nowrap bg-amber-400 px-1 text-[10px] font-semibold text-slate-950">{displayLabel(detection)} {Math.round(detection.confidence * 100)}%</span></div>)}{result?.persons?.map((person) => <PersonComplianceOverlay key={`live-person-${person.trackId}`} person={person} />)}</div>}
-          {mode === 'RECORDED_VIDEO' && videoUrl && <div className="relative h-full w-full"><video ref={videoRef} src={videoUrl} controls className="h-full w-full object-contain" />{result?.detections.map((detection) => <div key={detection.detectionId} className="absolute border-2 border-amber-400" style={{ left: `${detection.boundingBox.x * 100}%`, top: `${detection.boundingBox.y * 100}%`, width: `${detection.boundingBox.width * 100}%`, height: `${detection.boundingBox.height * 100}%` }}><span className="absolute left-0 top-0 whitespace-nowrap bg-amber-400 px-1 text-[10px] font-semibold text-slate-950">{displayLabel(detection)} {Math.round(detection.confidence * 100)}%</span></div>)}{result?.persons?.map((person) => <PersonComplianceOverlay key={`person-${person.trackId}`} person={person} />)}</div>}
-          {mode === 'IMAGE' && imageUrl && <div className="relative h-full w-full"><img src={imageUrl} alt="Selected safety source" className="h-full w-full object-contain" />{result?.detections.map((detection) => <div key={detection.detectionId} className="absolute border-2 border-amber-400" style={{ left: `${detection.boundingBox.x * 100}%`, top: `${detection.boundingBox.y * 100}%`, width: `${detection.boundingBox.width * 100}%`, height: `${detection.boundingBox.height * 100}%` }}><span className="absolute left-0 top-0 whitespace-nowrap bg-amber-400 px-1 text-[10px] font-semibold text-slate-950">{displayLabel(detection)} {Math.round(detection.confidence * 100)}%</span></div>)}</div>}
+        <div ref={containerRef} className="relative flex aspect-video items-center justify-center bg-slate-950">
+          {mode === 'LIVE_CAMERA' && <div className="relative h-full w-full"><video ref={videoRef} autoPlay playsInline muted onLoadedMetadata={updateMediaLayout} className={`h-full w-full object-contain ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`} />{result?.detections.map((detection) => <div key={detection.detectionId} className="pointer-events-none absolute border-2 border-amber-400" style={getOverlayStyle(detection.boundingBox)}><span className="absolute left-0 top-0 whitespace-nowrap bg-amber-400 px-1 text-[10px] font-semibold text-slate-950 shadow">{displayLabel(detection)} {Math.round(detection.confidence * 100)}%</span></div>)}{result?.persons?.map((person) => <PersonComplianceOverlay key={`live-person-${person.trackId}`} person={person} style={getOverlayStyle(person.boundingBox)} />)}</div>}
+          {mode === 'RECORDED_VIDEO' && videoUrl && <div className="relative h-full w-full"><video ref={videoRef} src={videoUrl} controls onLoadedMetadata={updateMediaLayout} className="h-full w-full object-contain" />{result?.detections.map((detection) => <div key={detection.detectionId} className="pointer-events-none absolute border-2 border-amber-400" style={getOverlayStyle(detection.boundingBox)}><span className="absolute left-0 top-0 whitespace-nowrap bg-amber-400 px-1 text-[10px] font-semibold text-slate-950 shadow">{displayLabel(detection)} {Math.round(detection.confidence * 100)}%</span></div>)}{result?.persons?.map((person) => <PersonComplianceOverlay key={`person-${person.trackId}`} person={person} style={getOverlayStyle(person.boundingBox)} />)}</div>}
+          {mode === 'IMAGE' && imageUrl && <div className="relative h-full w-full"><img ref={imageRef} src={imageUrl} alt="Selected safety source" onLoad={updateMediaLayout} className="h-full w-full object-contain" />{result?.detections.map((detection) => <div key={detection.detectionId} className="pointer-events-none absolute border-2 border-amber-400" style={getOverlayStyle(detection.boundingBox)}><span className="absolute left-0 top-0 whitespace-nowrap bg-amber-400 px-1 text-[10px] font-semibold text-slate-950 shadow">{displayLabel(detection)} {Math.round(detection.confidence * 100)}%</span></div>)}{result?.persons?.map((person) => <PersonComplianceOverlay key={`img-person-${person.trackId}`} person={person} style={getOverlayStyle(person.boundingBox)} />)}</div>}
           {((mode === 'RECORDED_VIDEO' && !videoUrl) || (mode === 'IMAGE' && !imageUrl)) && <div className="p-8 text-center text-sm text-slate-500">{mode === 'IMAGE' ? 'Upload an image to begin analysis.' : 'Upload a recorded video to begin analysis.'}</div>}
           {mode === 'LIVE_CAMERA' && !stream && <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-950/90 p-6 text-center"><CameraIcon className="text-slate-600" size={40} /><p className="text-sm text-slate-400">{cameraError?.message || inferenceError || statusLabel}</p>{isCameraSupported() && <button onClick={startCamera} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500">Start Camera</button>}</div>}
         </div>

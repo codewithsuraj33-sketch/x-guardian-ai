@@ -37,6 +37,7 @@ export interface PPEStatus {
   vest: boolean;
   gloves: boolean;
   shoes: boolean;
+  mask?: boolean;
 }
 
 /** A worker tracked inside the factory */
@@ -96,6 +97,7 @@ export interface SystemSettings {
   vestRequired: boolean;
   glovesRequired: boolean;
   shoesRequired: boolean;
+  maskRequired?: boolean;
   confidenceThreshold: number;
   audioAlert: boolean;
   browserNotification: boolean;
@@ -178,11 +180,13 @@ export interface PPEDetection {
   vest: boolean;
   gloves: boolean;
   shoes: boolean;
+  mask?: boolean;
   confidences?: {
     helmet?: number;
     vest?: number;
     gloves?: number;
     shoes?: number;
+    mask?: number;
     person?: number;
   };
 }

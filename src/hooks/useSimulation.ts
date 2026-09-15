@@ -19,10 +19,12 @@ export function useSimulation(
   enabled: boolean = true
 ) {
   const workersRef = useRef(workers);
-  workersRef.current = workers;
-
   const zonesRef = useRef(zones);
-  zonesRef.current = zones;
+
+  useEffect(() => {
+    workersRef.current = workers;
+    zonesRef.current = zones;
+  }, [workers, zones]);
 
   useEffect(() => {
     if (!enabled) return;

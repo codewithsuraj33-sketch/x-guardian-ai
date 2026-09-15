@@ -34,6 +34,7 @@ class PPESummarySchema(BaseModel):
     vest: bool = Field(False, description="Compliant high-visibility safety vest detected")
     gloves: bool = Field(False, description="Compliant safety gloves detected")
     shoes: bool = Field(False, description="Compliant safety footwear detected")
+    mask: bool = Field(False, description="Compliant safety face mask detected")
     confidences: Optional[Dict[str, float]] = Field(default_factory=dict)
 
 

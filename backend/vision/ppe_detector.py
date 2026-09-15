@@ -23,7 +23,7 @@ from app.models.schemas import (
 )
 from .detector import VisionDetector
 
-REQUIRED_PPE = ("Helmet", "Vest", "Boots", "Glove")
+REQUIRED_PPE = ("Helmet", "Vest", "Boots", "Glove", "Mask")
 PPE_NAMES = set(REQUIRED_PPE)
 DETECTION_THRESHOLD = 0.45
 VEST_CONFIDENCE_THRESHOLD = float(os.getenv("XGUARDIAN_VEST_CONFIDENCE_THRESHOLD", "0.60"))
@@ -73,6 +73,8 @@ def ppe_region(name: str, person: list[float]) -> tuple[float, float, float, flo
     height = bottom - top
     if name == "Helmet":
         return left - width * 0.10, top - height * 0.10, right + width * 0.10, top + height * 0.35
+    if name == "Mask":
+        return left - width * 0.05, top + height * 0.08, right + width * 0.05, top + height * 0.35
     if name == "Vest":
         return left + width * 0.10, top + height * 0.20, right - width * 0.10, top + height * 0.78
     if name == "Glove":
