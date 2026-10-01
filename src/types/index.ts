@@ -202,6 +202,31 @@ export interface FireSmokeDetection {
   smokeDensity: number; // 0 to 100%
 }
 
+/** Human joint keypoint in normalized coordinates (0.0 to 1.0) */
+export interface Keypoint {
+  x: number;
+  y: number;
+  confidence: number;
+  name?: string;
+}
+
+/** Worker posture classification */
+export type PostureState = 'STANDING' | 'BENDING' | 'SITTING' | 'CROUCHING' | 'FALLEN' | 'LYING_DOWN';
+
+/** Human skeletal pose and posture dynamics */
+export interface SkeletonPose {
+  trackId?: string;
+  keypoints: Keypoint[];
+  postureState: PostureState;
+  torsoAngle?: number;
+  isFall?: boolean;
+  isAbnormalPosture?: boolean;
+  dropVelocity?: number;
+  poseChange?: number;
+  postureTransition?: string;
+  ergonomicRisk?: 'LOW' | 'MODERATE' | 'HIGH';
+}
+
 /** Full frame inference response from vision backend */
 export interface VisionFrameResult {
   timestamp: string;
@@ -212,6 +237,7 @@ export interface VisionFrameResult {
   fireSmoke?: FireSmokeDetection;
   inferenceTimeMs?: number;
   persons?: PersonSafety[];
+  skeletons?: SkeletonPose[];
   incidents?: VisionIncident[];
 }
 
@@ -221,6 +247,7 @@ export interface PersonSafety {
   visible: boolean;
   ppeStates: Record<string, 'UNKNOWN' | 'DETECTED' | 'CONFIRMED' | 'MISSING_CANDIDATE' | 'VIOLATION' | 'COMPLIANT'>;
   violationTypes: string[];
+  skeleton?: SkeletonPose;
 }
 
 export interface VisionIncident {

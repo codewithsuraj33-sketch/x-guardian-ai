@@ -49,6 +49,37 @@ class FireSmokeSchema(BaseModel):
     smokeDensity: float = Field(0.0, ge=0.0, le=100.0, description="Estimated smoke haze density %")
 
 
+class KeypointSchema(BaseModel):
+    """Single body joint keypoint in normalized coordinates."""
+    x: float = Field(..., description="Normalized X coordinate (0.0 to 1.0)")
+    y: float = Field(..., description="Normalized Y coordinate (0.0 to 1.0)")
+    confidence: float = Field(..., description="Confidence score 0.0-1.0")
+    name: Optional[str] = Field(None, description="Joint name (e.g. nose, left_shoulder)")
+
+
+class SkeletonPoseSchema(BaseModel):
+    """Full 17-point human pose skeleton and posture analysis."""
+    trackId: Optional[str] = None
+    keypoints: List[KeypointSchema] = Field(default_factory=list)
+    postureState: str = Field("STANDING", description="Postural state: STANDING, BENDING, SITTING, CROUCHING, FALLEN")
+    torsoAngle: Optional[float] = Field(None, description="Torso angle relative to ground (degrees)")
+    isFall: bool = Field(False, description="True if fall / collapse is detected")
+    isAbnormalPosture: bool = Field(False, description="True if ergonomic strain or abnormal posture detected")
+    dropVelocity: Optional[float] = Field(None, description="Vertical downward velocity (normalized units/sec)")
+    poseChange: Optional[float] = Field(None, description="Skeleton change displacement from previous frame")
+    postureTransition: Optional[str] = Field(None, description="Dynamic transition in posture (e.g. STANDING -> BENDING)")
+    ergonomicRisk: Optional[str] = Field("LOW", description="Ergonomic strain evaluation: LOW, MODERATE, HIGH")
+
+
+class PersonSafetySchema(BaseModel):
+    trackId: str
+    boundingBox: BoundingBoxSchema
+    visible: bool = True
+    ppeStates: Dict[str, str] = Field(default_factory=dict)
+    violationTypes: List[str] = Field(default_factory=list)
+    skeleton: Optional[SkeletonPoseSchema] = None
+
+
 class VisionFrameResponse(BaseModel):
     """Full frame inference response from vision backend."""
     timestamp: str
@@ -58,16 +89,9 @@ class VisionFrameResponse(BaseModel):
     ppeSummary: Optional[PPESummarySchema] = None
     fireSmoke: Optional[FireSmokeSchema] = None
     inferenceTimeMs: Optional[float] = Field(None, description="Inference latency in milliseconds")
-    persons: List["PersonSafetySchema"] = Field(default_factory=list)
+    persons: List[PersonSafetySchema] = Field(default_factory=list)
+    skeletons: List[SkeletonPoseSchema] = Field(default_factory=list)
     incidents: List["VisionIncidentSchema"] = Field(default_factory=list)
-
-
-class PersonSafetySchema(BaseModel):
-    trackId: str
-    boundingBox: BoundingBoxSchema
-    visible: bool = True
-    ppeStates: Dict[str, str] = Field(default_factory=dict)
-    violationTypes: List[str] = Field(default_factory=list)
 
 
 class VisionIncidentSchema(BaseModel):

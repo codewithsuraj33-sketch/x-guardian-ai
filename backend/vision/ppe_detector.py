@@ -18,10 +18,12 @@ from app.models.schemas import (
     BoundingBoxSchema,
     DetectionItemSchema,
     PersonSafetySchema,
+    SkeletonPoseSchema,
     VisionFrameResponse,
     VisionIncidentSchema,
 )
 from .detector import VisionDetector
+from .pose_detector import SkeletonPoseTracker
 
 REQUIRED_PPE = ("Helmet", "Vest", "Boots", "Glove", "Mask")
 PPE_NAMES = set(REQUIRED_PPE)
@@ -160,6 +162,9 @@ class UltralyticsPPEDetector:
         except Exception as error:
             self.load_error = str(error)
 
+        pose_model_path = os.getenv("XGUARDIAN_POSE_MODEL_PATH", str(self.model_path.parent / "yolov8n-pose.pt")).strip()
+        self.pose_tracker: SkeletonPoseTracker | None = SkeletonPoseTracker(pose_model_path) if Path(pose_model_path).is_file() else None
+
     def is_ready(self) -> bool:
         return self.model is not None and self.model_path.is_file() and self.load_error is None
 
@@ -167,6 +172,8 @@ class UltralyticsPPEDetector:
         self._tracks.pop(camera_id, None)
         self._frame_numbers.pop(camera_id, None)
         self._active_incidents = {key for key in self._active_incidents if key[0] != camera_id}
+        if self.pose_tracker:
+            self.pose_tracker.reset_session(camera_id)
 
     def detect(self, image_bytes: bytes, camera_id: str, source: str = "image") -> VisionFrameResponse:
         if not self.is_ready():
@@ -206,6 +213,34 @@ class UltralyticsPPEDetector:
             elif class_name in PPE_NAMES:
                 ppe_detections.append((class_name, confidence, coordinates))
 
+        skeletons_by_track: dict[int, SkeletonPoseSchema] = {}
+        all_skeletons: list[SkeletonPoseSchema] = []
+        if self.pose_tracker and self.pose_tracker.is_ready():
+            pose_res = self.pose_tracker.extract_poses(image, camera_id, persons)
+            skeletons_by_track = pose_res.poses_by_track
+            all_skeletons = pose_res.all_skeletons
+
+            # Dual-model synergy: if YOLOv8-pose detected persons missed by best.pt, incorporate them
+            for supp_tid, supp_box, supp_conf in pose_res.supplementary_persons:
+                if supp_tid not in persons:
+                    persons[supp_tid] = supp_box
+                    detections.append(
+                        DetectionItemSchema(
+                            detectionId=f"det-{camera_id}-{frame_number}-pose-{supp_tid}",
+                            className="person",
+                            confidence=round(supp_conf, 3),
+                            boundingBox=BoundingBoxSchema(
+                                x=round(supp_box[0] / width, 4),
+                                y=round(supp_box[1] / height, 4),
+                                width=round((supp_box[2] - supp_box[0]) / width, 4),
+                                height=round((supp_box[3] - supp_box[1]) / height, 4),
+                            ),
+                            trackId=str(supp_tid),
+                            timestamp=timestamp,
+                            source=source,
+                        )
+                    )
+
         associated_by_track: dict[int, dict[str, tuple[float, list[float]]]] = {}
         for name, confidence, coordinates in ppe_detections:
             candidates = [track_id for track_id, person in persons.items() if overlaps_or_contains_center(coordinates, ppe_region(name, person))]
@@ -223,6 +258,31 @@ class UltralyticsPPEDetector:
             visible = visible_person(person_box, width, height)
             ppe_states: dict[str, str] = {}
             violation_types: list[str] = []
+
+            # Skeleton posture & fall incident evaluation
+            skeleton = skeletons_by_track.get(track_id)
+            if skeleton:
+                fall_key = (camera_id, track_id, "FALL")
+                if skeleton.isFall:
+                    violation_types.append("Worker Fall / Collapse")
+                    if fall_key not in self._active_incidents:
+                        incident_id = f"INC-AI-{camera_id}-{frame_number}-{track_id}-FALL"
+                        evidence_frame = annotated.copy()
+                        x1, y1, x2, y2 = [int(value) for value in person_box]
+                        cv2.rectangle(evidence_frame, (x1, y1), (x2, y2), (0, 0, 255), 4)
+                        cv2.putText(evidence_frame, f"CRITICAL: WORKER FALL / COLLAPSE (ID {track_id})", (x1, max(28, y1 - 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 2)
+                        angle_label = f"Torso Angle: {skeleton.torsoAngle} deg | Man Down" if skeleton.torsoAngle is not None else "Man Down"
+                        cv2.putText(evidence_frame, angle_label, (x1, max(28, y1 + 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                        cv2.putText(evidence_frame, timestamp, (12, height - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        encoded_ok, encoded = cv2.imencode(".jpg", evidence_frame)
+                        evidence = f"data:image/jpeg;base64,{base64.b64encode(encoded.tobytes()).decode('ascii')}" if encoded_ok else None
+                        incidents.append(VisionIncidentSchema(incidentId=incident_id, trackId=str(track_id), violationType="Worker Fall / Collapse", requiredPpe="Emergency Assistance", timestamp=timestamp, frameNumber=frame_number, confidence=0.98, cameraId=camera_id, zone="TEST-ZONE", evidenceImage=evidence))
+                        self._active_incidents.add(fall_key)
+                elif fall_key in self._active_incidents and skeleton.postureState == "STANDING":
+                    self._active_incidents.remove(fall_key)
+                elif skeleton.isAbnormalPosture:
+                    violation_types.append("Unsafe Posture / Ergonomic Strain")
+
             for name in REQUIRED_PPE:
                 item = state_track.ppe[name]
                 association = associated_by_track.get(track_id, {}).get(name)
@@ -251,10 +311,10 @@ class UltralyticsPPEDetector:
                 elif key in self._active_incidents and state == "COMPLIANT":
                     self._active_incidents.remove(key)
                 ppe_states[name] = state
-            person_summaries.append(PersonSafetySchema(trackId=str(track_id), boundingBox=BoundingBoxSchema(x=person_box[0] / width, y=person_box[1] / height, width=(person_box[2] - person_box[0]) / width, height=(person_box[3] - person_box[1]) / height), visible=visible, ppeStates=ppe_states, violationTypes=violation_types))
+            person_summaries.append(PersonSafetySchema(trackId=str(track_id), boundingBox=BoundingBoxSchema(x=person_box[0] / width, y=person_box[1] / height, width=(person_box[2] - person_box[0]) / width, height=(person_box[3] - person_box[1]) / height), visible=visible, ppeStates=ppe_states, violationTypes=violation_types, skeleton=skeleton))
 
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-        return VisionFrameResponse(timestamp=timestamp, cameraId=camera_id, source=source, detections=detections, persons=person_summaries, incidents=incidents, inferenceTimeMs=elapsed_ms)
+        return VisionFrameResponse(timestamp=timestamp, cameraId=camera_id, source=source, detections=detections, persons=person_summaries, skeletons=all_skeletons, incidents=incidents, inferenceTimeMs=elapsed_ms)
 
 
 def create_ppe_detector() -> VisionDetector:

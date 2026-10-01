@@ -6,6 +6,7 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { Incident, SystemSettings, RiskLevel, IncidentStatus } from '../types';
+import { initialIncidents } from '../data/incidents';
 import { alertManager } from '../services/alertManager';
 
 export const DEFAULT_SETTINGS: SystemSettings = {
@@ -40,6 +41,8 @@ interface SafetyContextValue {
     frameNumber?: number;
     evidenceImage?: string;
   }) => void;
+  updateIncidentStatus: (incidentId: string, status: IncidentStatus) => void;
+  resetToSampleIncidents: () => void;
   clearIncidents: () => void;
   activeInputMode: 'LIVE_CAMERA' | 'RECORDED_VIDEO' | 'IMAGE';
   setActiveInputMode: (mode: 'LIVE_CAMERA' | 'RECORDED_VIDEO' | 'IMAGE') => void;
@@ -62,15 +65,20 @@ export function SafetyProvider({ children }: { children: ReactNode }) {
     return DEFAULT_SETTINGS;
   });
 
-  // 2. Real incidents state with localStorage persistence (starts EMPTY, zero fake incidents)
+  // 2. Real & audit incidents state with localStorage persistence
   const [incidents, setIncidents] = useState<Incident[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_INCIDENTS);
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
     } catch {
       // ignore
     }
-    return [];
+    return initialIncidents;
   });
 
   // 3. Active input channel & status
@@ -114,7 +122,9 @@ export function SafetyProvider({ children }: { children: ReactNode }) {
       };
 
       setIncidents((prev) => {
-        const updated = [newIncident, ...prev].slice(0, 100);
+        // Deduplicate in case same incident is pushed twice
+        const filtered = prev.filter((i) => i.incidentId !== newIncident.incidentId);
+        const updated = [newIncident, ...filtered].slice(0, 100);
         try {
           localStorage.setItem(STORAGE_KEY_INCIDENTS, JSON.stringify(updated));
         } catch {
@@ -130,6 +140,31 @@ export function SafetyProvider({ children }: { children: ReactNode }) {
     },
     [settings.audioAlert, settings.browserNotification]
   );
+
+  // Update lifecycle status of an incident
+  const updateIncidentStatus = useCallback((incidentId: string, newStatus: IncidentStatus) => {
+    setIncidents((prev) => {
+      const updated = prev.map((inc) =>
+        inc.incidentId === incidentId ? { ...inc, status: newStatus } : inc
+      );
+      try {
+        localStorage.setItem(STORAGE_KEY_INCIDENTS, JSON.stringify(updated));
+      } catch {
+        // ignore
+      }
+      return updated;
+    });
+  }, []);
+
+  // Reset to rich sample factory audit history
+  const resetToSampleIncidents = useCallback(() => {
+    setIncidents(initialIncidents);
+    try {
+      localStorage.setItem(STORAGE_KEY_INCIDENTS, JSON.stringify(initialIncidents));
+    } catch {
+      // ignore
+    }
+  }, []);
 
   // Clear all incidents
   const clearIncidents = useCallback(() => {
@@ -163,6 +198,8 @@ export function SafetyProvider({ children }: { children: ReactNode }) {
         updateSettings,
         incidents,
         addIncident,
+        updateIncidentStatus,
+        resetToSampleIncidents,
         clearIncidents,
         activeInputMode,
         setActiveInputMode,

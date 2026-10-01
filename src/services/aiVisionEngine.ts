@@ -8,8 +8,19 @@ import {
   Detection,
   FireSmokeDetection,
   PPEDetection,
+  SkeletonPose,
   VisionFrameResult,
 } from '../types';
+
+export const COCO_SKELETON_BONES: [number, number][] = [
+  [0, 1], [0, 2], [1, 3], [2, 4], // facial
+  [5, 6],                         // shoulders
+  [5, 7], [7, 9],                 // left arm
+  [6, 8], [8, 10],                // right arm
+  [5, 11], [6, 12], [11, 12],     // torso
+  [11, 13], [13, 15],             // left leg
+  [12, 14], [14, 16],             // right leg
+];
 
 export interface OverlayRenderOptions {
   canvas: HTMLCanvasElement;
@@ -17,6 +28,8 @@ export interface OverlayRenderOptions {
   detections: Detection[];
   ppeSummary?: PPEDetection;
   fireSmoke?: FireSmokeDetection;
+  skeletons?: SkeletonPose[];
+  showSkeleton?: boolean;
   cameraId: string;
   zoneName: string;
   fps: number;
@@ -35,6 +48,8 @@ export function renderIndustrialHUD(options: OverlayRenderOptions) {
     detections,
     ppeSummary,
     fireSmoke,
+    skeletons,
+    showSkeleton = true,
     cameraId,
     zoneName,
     fps,
@@ -53,32 +68,34 @@ export function renderIndustrialHUD(options: OverlayRenderOptions) {
 
   ctx.save();
 
-  if (isMirrored) {
-    ctx.translate(w, 0);
-    ctx.scale(-1, 1);
-  }
-
   // 1. Draw corner reticles and targeting crosshairs
   drawSensorGrid(ctx, w, h);
 
-  // 2. Draw Object Detections (Person, Helmet, Vest, Gloves, Shoes)
+  // 2. Draw Skeletons (Human Pose Keypoints & Wireframes)
+  if (showSkeleton && skeletons && skeletons.length > 0) {
+    skeletons.forEach((skel) => {
+      drawSkeleton(ctx, skel, w, h, isMirrored);
+    });
+  }
+
+  // 3. Draw Object Detections (Person, Helmet, Vest, Gloves, Shoes)
   detections.forEach((det) => {
     drawDetectionBox(ctx, det, w, h, isMirrored);
   });
 
-  // 3. Draw Fire Detection (if active)
+  // 4. Draw Fire Detection (if active)
   if (fireSmoke?.hasFire && fireSmoke.fireBbox) {
     drawFireBox(ctx, fireSmoke.fireBbox, fireSmoke.fireConfidence, w, h, isMirrored);
   }
 
-  // 4. Draw Smoke Detection (if active)
+  // 5. Draw Smoke Detection (if active)
   if (fireSmoke?.hasSmoke && fireSmoke.smokeBbox) {
     drawSmokeBox(ctx, fireSmoke.smokeBbox, fireSmoke.smokeConfidence, fireSmoke.smokeDensity, w, h, isMirrored);
   }
 
   ctx.restore();
 
-  // 5. Draw HUD Telemetry Header & Bottom Bar (Always un-mirrored for readable text)
+  // 6. Draw HUD Telemetry Header & Bottom Bar (Always un-mirrored for readable text)
   drawHUDTelemetry(ctx, w, h, cameraId, zoneName, fps, inferenceMs, ppeSummary, fireSmoke);
 }
 
@@ -122,6 +139,127 @@ function drawSensorGrid(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.restore();
 }
 
+export function drawSkeleton(
+  ctx: CanvasRenderingContext2D,
+  skeleton: SkeletonPose,
+  w: number,
+  h: number,
+  isMirrored: boolean
+) {
+  const { keypoints, postureState, torsoAngle, isFall, isAbnormalPosture, postureTransition, ergonomicRisk } = skeleton;
+  if (!keypoints || keypoints.length < 17) return;
+
+  ctx.save();
+
+  // Dynamic styling based on posture / fall
+  const isEmergency = isFall || postureState === 'FALLEN';
+  const isBending = postureState === 'BENDING' || isAbnormalPosture;
+  const isSitting = postureState === 'SITTING';
+  const isCrouching = postureState === 'CROUCHING';
+
+  let strokeColor = '#06b6d4';
+  let jointColor = '#67e8f9';
+  if (isEmergency) {
+    strokeColor = '#ef4444';
+    jointColor = '#fca5a5';
+  } else if (isBending) {
+    strokeColor = '#f59e0b';
+    jointColor = '#fde68a';
+  } else if (isSitting) {
+    strokeColor = '#10b981';
+    jointColor = '#6ee7b7';
+  } else if (isCrouching) {
+    strokeColor = '#38bdf8';
+    jointColor = '#bae6fd';
+  }
+
+  // 1. Draw Bones
+  ctx.strokeStyle = strokeColor;
+  ctx.lineWidth = isEmergency ? 4 : 2.5;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  if (isEmergency) {
+    ctx.shadowColor = '#ef4444';
+    ctx.shadowBlur = 10;
+  }
+
+  COCO_SKELETON_BONES.forEach(([i, j]) => {
+    const p1 = keypoints[i];
+    const p2 = keypoints[j];
+    if (p1 && p2 && p1.confidence >= 0.15 && p2.confidence >= 0.15) {
+      const x1 = isMirrored ? (1 - p1.x) * w : p1.x * w;
+      const y1 = p1.y * h;
+      const x2 = isMirrored ? (1 - p2.x) * w : p2.x * w;
+      const y2 = p2.y * h;
+
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+  });
+
+  // 2. Draw Keypoint Joints
+  keypoints.forEach((kp) => {
+    if (kp.confidence >= 0.15) {
+      const kx = isMirrored ? (1 - kp.x) * w : kp.x * w;
+      const ky = kp.y * h;
+
+      // Outer ring
+      ctx.fillStyle = jointColor;
+      ctx.beginPath();
+      ctx.arc(kx, ky, isEmergency ? 5 : 3.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Inner dot
+      ctx.fillStyle = '#020617';
+      ctx.beginPath();
+      ctx.arc(kx, ky, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+
+  // 3. Posture Badge / Telemetry Label
+  const headKp = (keypoints[0] && keypoints[0].confidence >= 0.15) ? keypoints[0] : (keypoints[5] && keypoints[5].confidence >= 0.15 ? keypoints[5] : keypoints[11]);
+  if (headKp && headKp.confidence >= 0.15) {
+    const lx = isMirrored ? (1 - headKp.x) * w : headKp.x * w;
+    const ly = Math.max(22, headKp.y * h - 24);
+
+    let postureText = `POSTURE: STANDING (${torsoAngle ?? 0}°)`;
+    let badgeColor = '#0891b2';
+
+    if (isEmergency) {
+      postureText = `🚨 FALL DETECTED (${torsoAngle ?? 0}°)`;
+      badgeColor = '#dc2626';
+    } else if (isBending) {
+      postureText = `⚠️ BENDING (${torsoAngle ?? 0}°) [${ergonomicRisk || 'MODERATE'} RISK]`;
+      badgeColor = '#d97706';
+    } else if (isSitting) {
+      postureText = `🪑 SITTING (${torsoAngle ?? 0}°)`;
+      badgeColor = '#059669';
+    } else if (isCrouching) {
+      postureText = `🦵 CROUCHING (${torsoAngle ?? 0}°)`;
+      badgeColor = '#0284c7';
+    }
+
+    if (postureTransition) {
+      postureText += ` | 🔄 ${postureTransition}`;
+    }
+
+    ctx.font = 'bold 10px monospace';
+    const textW = ctx.measureText(postureText).width;
+
+    ctx.fillStyle = badgeColor;
+    ctx.fillRect(lx - textW / 2 - 5, ly - 12, textW + 10, 16);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(postureText, lx - textW / 2, ly);
+  }
+
+  ctx.restore();
+}
+
 function drawDetectionBox(
   ctx: CanvasRenderingContext2D,
   det: Detection,
@@ -130,7 +268,7 @@ function drawDetectionBox(
   isMirrored: boolean
 ) {
   const { className, confidence, boundingBox } = det;
-  const bx = boundingBox.x * w;
+  const bx = isMirrored ? (1 - boundingBox.x - boundingBox.width) * w : boundingBox.x * w;
   const by = boundingBox.y * h;
   const bw = boundingBox.width * w;
   const bh = boundingBox.height * h;
@@ -211,7 +349,7 @@ function drawFireBox(
   h: number,
   isMirrored: boolean
 ) {
-  const bx = bbox.x * w;
+  const bx = isMirrored ? (1 - bbox.x - bbox.width) * w : bbox.x * w;
   const by = bbox.y * h;
   const bw = bbox.width * w;
   const bh = bbox.height * h;
@@ -261,7 +399,7 @@ function drawSmokeBox(
   h: number,
   isMirrored: boolean
 ) {
-  const bx = bbox.x * w;
+  const bx = isMirrored ? (1 - bbox.x - bbox.width) * w : bbox.x * w;
   const by = bbox.y * h;
   const bw = bbox.width * w;
   const bh = bbox.height * h;
@@ -451,10 +589,38 @@ export function generateSyntheticFrameDetections(
     });
   }
 
+  const syntheticSkeleton: SkeletonPose = {
+    trackId: 'TRK-101',
+    postureState: 'STANDING',
+    torsoAngle: 86.5,
+    isFall: false,
+    isAbnormalPosture: false,
+    keypoints: [
+      { x: 0.50, y: 0.20, confidence: 0.95, name: 'nose' },
+      { x: 0.48, y: 0.19, confidence: 0.94, name: 'left_eye' },
+      { x: 0.52, y: 0.19, confidence: 0.94, name: 'right_eye' },
+      { x: 0.46, y: 0.21, confidence: 0.90, name: 'left_ear' },
+      { x: 0.54, y: 0.21, confidence: 0.90, name: 'right_ear' },
+      { x: 0.44, y: 0.28, confidence: 0.96, name: 'left_shoulder' },
+      { x: 0.56, y: 0.28, confidence: 0.96, name: 'right_shoulder' },
+      { x: 0.40, y: 0.42, confidence: 0.91, name: 'left_elbow' },
+      { x: 0.60, y: 0.42, confidence: 0.91, name: 'right_elbow' },
+      { x: 0.36, y: 0.55, confidence: 0.88, name: 'left_wrist' },
+      { x: 0.64, y: 0.55, confidence: 0.88, name: 'right_wrist' },
+      { x: 0.46, y: 0.55, confidence: 0.94, name: 'left_hip' },
+      { x: 0.54, y: 0.55, confidence: 0.94, name: 'right_hip' },
+      { x: 0.45, y: 0.72, confidence: 0.92, name: 'left_knee' },
+      { x: 0.55, y: 0.72, confidence: 0.92, name: 'right_knee' },
+      { x: 0.45, y: 0.88, confidence: 0.90, name: 'left_ankle' },
+      { x: 0.55, y: 0.88, confidence: 0.90, name: 'right_ankle' },
+    ],
+  };
+
   return {
     timestamp: nowIso,
     cameraId,
     detections,
+    skeletons: [syntheticSkeleton],
     ppeSummary: {
       person: true,
       helmet: isCompliant,

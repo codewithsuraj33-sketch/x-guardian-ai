@@ -13,6 +13,7 @@ import {
   Detection,
   PPEDetection,
   FireSmokeDetection,
+  SkeletonPose,
   VideoFeedMode,
 } from '../types';
 import { renderIndustrialHUD } from '../services/aiVisionEngine';
@@ -49,6 +50,8 @@ interface LiveCameraProps {
   detections?: Detection[];
   ppeSummary?: PPEDetection;
   fireSmoke?: FireSmokeDetection;
+  skeletons?: SkeletonPose[];
+  showSkeleton?: boolean;
   videoMode?: VideoFeedMode;
   recordedVideoSrc?: string;
   onStartCamera: () => void;
@@ -73,6 +76,8 @@ export default function LiveCamera({
   detections = [],
   ppeSummary,
   fireSmoke,
+  skeletons,
+  showSkeleton = true,
   videoMode = 'RECORDED_FOOTAGE',
   recordedVideoSrc,
   onStartCamera,
@@ -141,6 +146,8 @@ export default function LiveCamera({
           detections,
           ppeSummary,
           fireSmoke,
+          skeletons,
+          showSkeleton,
           cameraId,
           zoneName,
           fps: inferenceFps,
@@ -154,7 +161,7 @@ export default function LiveCamera({
 
     animId = requestAnimationFrame(renderLoop);
     return () => cancelAnimationFrame(animId);
-  }, [detections, ppeSummary, fireSmoke, cameraId, zoneName, inferenceFps, videoMode, facingMode]);
+  }, [detections, ppeSummary, fireSmoke, skeletons, showSkeleton, cameraId, zoneName, inferenceFps, videoMode, facingMode]);
 
   const handleLoadedMetadata = () => {
     if (videoRef.current) {
