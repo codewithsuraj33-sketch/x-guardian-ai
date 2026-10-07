@@ -9,6 +9,7 @@ const ruleFields: Array<[keyof SystemSettings, string]> = [
   ['glovesRequired', 'Gloves required'],
   ['shoesRequired', 'Protective footwear required'],
   ['maskRequired', 'Face mask required'],
+  ['gogglesRequired', 'Safety goggles / eye protection required'],
 ];
 
 export default function Settings() {

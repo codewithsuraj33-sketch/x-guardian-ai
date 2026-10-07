@@ -9,6 +9,7 @@ import {
   Shirt,
   Hand,
   Footprints,
+  Glasses,
   Flame,
   CloudFog,
   ShieldCheck,
@@ -27,32 +28,34 @@ export default function SafetyGearMatrix({ workers, zones }: SafetyGearMatrixPro
   const vestCount = workers.filter((w) => w.ppe.vest).length;
   const glovesCount = workers.filter((w) => w.ppe.gloves).length;
   const shoesCount = workers.filter((w) => w.ppe.shoes).length;
+  const gogglesCount = workers.filter((w) => w.ppe.goggles ?? true).length;
 
   const helmetRate = Math.round((helmetCount / total) * 100);
   const vestRate = Math.round((vestCount / total) * 100);
   const glovesRate = Math.round((glovesCount / total) * 100);
   const shoesRate = Math.round((shoesCount / total) * 100);
+  const gogglesRate = Math.round((gogglesCount / total) * 100);
 
   const activeFireZones = zones.filter((z) => z.hasActiveFire);
   const activeSmokeZones = zones.filter((z) => z.hasActiveSmoke);
 
   const gearItems = [
     {
-      name: 'Safety Helmets (Hard Hats)',
+      name: 'Safety Helmets',
       count: helmetCount,
       rate: helmetRate,
       icon: HardHat,
       color: helmetRate >= 90 ? 'emerald' : helmetRate >= 70 ? 'amber' : 'rose',
     },
     {
-      name: 'High-Visibility Vests',
+      name: 'High-Vis Vests',
       count: vestCount,
       rate: vestRate,
       icon: Shirt,
       color: vestRate >= 90 ? 'emerald' : vestRate >= 70 ? 'amber' : 'rose',
     },
     {
-      name: 'Protective Footwear',
+      name: 'Protective Boots',
       count: shoesCount,
       rate: shoesRate,
       icon: Footprints,
@@ -64,6 +67,13 @@ export default function SafetyGearMatrix({ workers, zones }: SafetyGearMatrixPro
       rate: glovesRate,
       icon: Hand,
       color: glovesRate >= 90 ? 'emerald' : glovesRate >= 70 ? 'amber' : 'rose',
+    },
+    {
+      name: 'Safety Goggles',
+      count: gogglesCount,
+      rate: gogglesRate,
+      icon: Glasses,
+      color: gogglesRate >= 90 ? 'emerald' : gogglesRate >= 70 ? 'amber' : 'rose',
     },
   ];
 
@@ -85,8 +95,8 @@ export default function SafetyGearMatrix({ workers, zones }: SafetyGearMatrixPro
         </span>
       </div>
 
-      {/* 4 Gear Items Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+      {/* 5 Gear Items Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
         {gearItems.map((item, idx) => {
           const Icon = item.icon;
           const isGood = item.rate >= 90;

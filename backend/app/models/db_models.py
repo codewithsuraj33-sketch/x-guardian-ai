@@ -58,6 +58,7 @@ class WorkerDB(Base):
     gloves = Column(Boolean, default=True)
     shoes = Column(Boolean, default=True)
     mask = Column(Boolean, default=True)
+    goggles = Column(Boolean, default=True)
     violations = Column(Text, default="[]")                       # JSON array string
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 

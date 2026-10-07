@@ -15,6 +15,7 @@ export const DEFAULT_SETTINGS: SystemSettings = {
   glovesRequired: true,
   shoesRequired: true,
   maskRequired: true,
+  gogglesRequired: true,
   confidenceThreshold: 0.75,
   audioAlert: true,
   browserNotification: false,

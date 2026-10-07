@@ -17,24 +17,27 @@ import numpy as np
 from app.models.schemas import (
     BoundingBoxSchema,
     DetectionItemSchema,
+    FireSmokeSchema,
     PersonSafetySchema,
+    PPESummarySchema,
     SkeletonPoseSchema,
     VisionFrameResponse,
     VisionIncidentSchema,
 )
 from .detector import VisionDetector
+from .hazard_detector import IndustrialHazardDetector
 from .pose_detector import SkeletonPoseTracker
 
-REQUIRED_PPE = ("Helmet", "Vest", "Boots", "Glove", "Mask")
+REQUIRED_PPE = ("Helmet", "Vest", "Boots", "Glove", "Mask", "Glass")
 PPE_NAMES = set(REQUIRED_PPE)
 DETECTION_THRESHOLD = 0.45
 VEST_CONFIDENCE_THRESHOLD = float(os.getenv("XGUARDIAN_VEST_CONFIDENCE_THRESHOLD", "0.60"))
 KEEP_CONFIRMED_THRESHOLD = 0.40
-TEMPORAL_WINDOW = 5
-PERSISTENCE_RATIO = 0.60
-VIOLATION_CONFIRMATION_FRAMES = 15
-RECOVERY_FRAMES = 5
-MIN_VISIBLE_FRACTION = 0.50
+TEMPORAL_WINDOW = 4
+PERSISTENCE_RATIO = 0.50
+VIOLATION_CONFIRMATION_FRAMES = int(os.getenv("XGUARDIAN_CONFIRMATION_FRAMES", "3"))
+RECOVERY_FRAMES = 4
+MIN_VISIBLE_FRACTION = 0.45
 MIN_PERSON_AREA_FRACTION = 0.0005
 
 
@@ -75,6 +78,8 @@ def ppe_region(name: str, person: list[float]) -> tuple[float, float, float, flo
     height = bottom - top
     if name == "Helmet":
         return left - width * 0.10, top - height * 0.10, right + width * 0.10, top + height * 0.35
+    if name == "Glass":
+        return left - width * 0.05, top + height * 0.02, right + width * 0.05, top + height * 0.28
     if name == "Mask":
         return left - width * 0.05, top + height * 0.08, right + width * 0.05, top + height * 0.35
     if name == "Vest":
@@ -164,6 +169,7 @@ class UltralyticsPPEDetector:
 
         pose_model_path = os.getenv("XGUARDIAN_POSE_MODEL_PATH", str(self.model_path.parent / "yolov8n-pose.pt")).strip()
         self.pose_tracker: SkeletonPoseTracker | None = SkeletonPoseTracker(pose_model_path) if Path(pose_model_path).is_file() else None
+        self.hazard_detector = IndustrialHazardDetector()
 
     def is_ready(self) -> bool:
         return self.model is not None and self.model_path.is_file() and self.load_error is None
@@ -191,6 +197,7 @@ class UltralyticsPPEDetector:
         if image is None:
             raise RuntimeError("Could not decode the uploaded frame as an image")
         height, width = image.shape[:2]
+
         frame_number = self._frame_numbers.get(camera_id, 0) + 1
         self._frame_numbers[camera_id] = frame_number
         tracks = self._tracks.setdefault(camera_id, {})
@@ -212,6 +219,37 @@ class UltralyticsPPEDetector:
                 persons[track_id] = coordinates
             elif class_name in PPE_NAMES:
                 ppe_detections.append((class_name, confidence, coordinates))
+
+        # Multi-spectral optical fire & smoke hazard analysis (with worker vest masking)
+        hazard_res = self.hazard_detector.detect(image, person_boxes=list(persons.values()))
+
+        if hazard_res.fire.has_fire and hazard_res.fire.bbox:
+            fx, fy, fw, fh = hazard_res.fire.bbox
+            detections.append(
+                DetectionItemSchema(
+                    detectionId=f"det-{camera_id}-{frame_number}-fire",
+                    className="fire",
+                    confidence=hazard_res.fire.confidence,
+                    boundingBox=BoundingBoxSchema(x=fx, y=fy, width=fw, height=fh),
+                    trackId=None,
+                    timestamp=timestamp,
+                    source=source,
+                )
+            )
+
+        if hazard_res.smoke.has_smoke and hazard_res.smoke.bbox:
+            sx, sy, sw, sh = hazard_res.smoke.bbox
+            detections.append(
+                DetectionItemSchema(
+                    detectionId=f"det-{camera_id}-{frame_number}-smoke",
+                    className="smoke",
+                    confidence=hazard_res.smoke.confidence,
+                    boundingBox=BoundingBoxSchema(x=sx, y=sy, width=sw, height=sh),
+                    trackId=None,
+                    timestamp=timestamp,
+                    source=source,
+                )
+            )
 
         skeletons_by_track: dict[int, SkeletonPoseSchema] = {}
         all_skeletons: list[SkeletonPoseSchema] = []
@@ -253,6 +291,70 @@ class UltralyticsPPEDetector:
         incidents: list[VisionIncidentSchema] = []
         person_summaries: list[PersonSafetySchema] = []
         annotated = result.plot()
+
+        # Multi-spectral optical fire hazard alerts & evidence
+        fire_key = (camera_id, "HAZARD", "FIRE")
+        if hazard_res.fire.has_fire and hazard_res.fire.bbox:
+            fx, fy, fw, fh = hazard_res.fire.bbox
+            bx1, by1, bx2, by2 = int(fx * width), int(fy * height), int((fx + fw) * width), int((fy + fh) * height)
+            cv2.rectangle(annotated, (bx1, by1), (bx2, by2), (0, 69, 255), 4)
+            cv2.putText(annotated, f"FIRE HAZARD ({int(hazard_res.fire.confidence * 100)}%)", (bx1, max(24, by1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 2)
+            if fire_key not in self._active_incidents:
+                incident_id = f"INC-AI-{camera_id}-{frame_number}-FIRE"
+                evidence_frame = annotated.copy()
+                cv2.putText(evidence_frame, "CRITICAL: FIRE HAZARD DETECTED", (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.95, (0, 0, 255), 3)
+                cv2.putText(evidence_frame, timestamp, (12, height - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                encoded_ok, encoded = cv2.imencode(".jpg", evidence_frame)
+                evidence = f"data:image/jpeg;base64,{base64.b64encode(encoded.tobytes()).decode('ascii')}" if encoded_ok else None
+                incidents.append(
+                    VisionIncidentSchema(
+                        incidentId=incident_id,
+                        trackId="HAZARD",
+                        violationType="Fire Hazard Detected",
+                        requiredPpe="Emergency Evacuation / Fire Extinguisher",
+                        timestamp=timestamp,
+                        frameNumber=frame_number,
+                        confidence=hazard_res.fire.confidence,
+                        cameraId=camera_id,
+                        zone="HAZARD-ZONE",
+                        evidenceImage=evidence,
+                    )
+                )
+                self._active_incidents.add(fire_key)
+        else:
+            self._active_incidents.discard(fire_key)
+
+        smoke_key = (camera_id, "HAZARD", "SMOKE")
+        if hazard_res.smoke.has_smoke and hazard_res.smoke.bbox and hazard_res.smoke.density > 20.0:
+            sx, sy, sw, sh = hazard_res.smoke.bbox
+            bx1, by1, bx2, by2 = int(sx * width), int(sy * height), int((sx + sw) * width), int((sy + sh) * height)
+            cv2.rectangle(annotated, (bx1, by1), (bx2, by2), (180, 180, 180), 3)
+            cv2.putText(annotated, f"SMOKE ({hazard_res.smoke.density:.0f}%)", (bx1, max(24, by1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+            if smoke_key not in self._active_incidents:
+                incident_id = f"INC-AI-{camera_id}-{frame_number}-SMOKE"
+                evidence_frame = annotated.copy()
+                cv2.putText(evidence_frame, f"WARNING: SMOKE HAZARD ({hazard_res.smoke.density:.0f}%)", (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 165, 255), 2)
+                cv2.putText(evidence_frame, timestamp, (12, height - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                encoded_ok, encoded = cv2.imencode(".jpg", evidence_frame)
+                evidence = f"data:image/jpeg;base64,{base64.b64encode(encoded.tobytes()).decode('ascii')}" if encoded_ok else None
+                incidents.append(
+                    VisionIncidentSchema(
+                        incidentId=incident_id,
+                        trackId="HAZARD",
+                        violationType="Smoke / Toxic Haze Detected",
+                        requiredPpe="Emergency Ventilation / Breathing Mask",
+                        timestamp=timestamp,
+                        frameNumber=frame_number,
+                        confidence=hazard_res.smoke.confidence,
+                        cameraId=camera_id,
+                        zone="HAZARD-ZONE",
+                        evidenceImage=evidence,
+                    )
+                )
+                self._active_incidents.add(smoke_key)
+        else:
+            self._active_incidents.discard(smoke_key)
+
         for track_id, person_box in persons.items():
             state_track = tracks.setdefault(track_id, TrackState())
             visible = visible_person(person_box, width, height)
@@ -288,33 +390,78 @@ class UltralyticsPPEDetector:
                 association = associated_by_track.get(track_id, {}).get(name)
                 state = update_ppe_state(item, name, bool(association) if visible else False, association[0] if association else None)
                 key = (camera_id, track_id, name)
+                display_ppe = "Safety Goggles" if name == "Glass" else name
                 if state == "MISSING_CANDIDATE" and visible:
                     if item.missing_frames >= VIOLATION_CONFIRMATION_FRAMES:
                         state = "VIOLATION"
                         item.state = state
                 if state == "VIOLATION":
-                    violation_types.append(f"Missing {name}")
+                    violation_types.append(f"Missing {display_ppe}")
                     if key not in self._active_incidents:
                         incident_id = f"INC-AI-{camera_id}-{frame_number}-{track_id}-{name}"
                         evidence_frame = annotated.copy()
                         x1, y1, x2, y2 = [int(value) for value in person_box]
                         cv2.rectangle(evidence_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
                         cv2.putText(evidence_frame, f"ID {track_id} PPE VIOLATION", (x1, max(24, y1 - 34)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                        cv2.putText(evidence_frame, f"Missing: {name}", (x1, max(24, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
-                        state_text = " | ".join(f"{ppe}: {'OK' if state_track.ppe[ppe].state in {'CONFIRMED', 'COMPLIANT'} else state_track.ppe[ppe].state}" for ppe in REQUIRED_PPE)
+                        cv2.putText(evidence_frame, f"Missing: {display_ppe}", (x1, max(24, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
+                        state_text = " | ".join(f"{'Goggles' if ppe == 'Glass' else ppe}: {'OK' if state_track.ppe[ppe].state in {'CONFIRMED', 'COMPLIANT'} else state_track.ppe[ppe].state}" for ppe in REQUIRED_PPE)
                         cv2.putText(evidence_frame, state_text, (x1, min(height - 10, y2 + 24)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 0), 2)
                         cv2.putText(evidence_frame, timestamp, (12, height - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                         encoded_ok, encoded = cv2.imencode(".jpg", evidence_frame)
                         evidence = f"data:image/jpeg;base64,{base64.b64encode(encoded.tobytes()).decode('ascii')}" if encoded_ok else None
-                        incidents.append(VisionIncidentSchema(incidentId=incident_id, trackId=str(track_id), violationType=f"Missing {name}", requiredPpe=name, timestamp=timestamp, frameNumber=frame_number, confidence=item.confidence, cameraId=camera_id, zone="TEST-ZONE", evidenceImage=evidence))
+                        incidents.append(VisionIncidentSchema(incidentId=incident_id, trackId=str(track_id), violationType=f"Missing {display_ppe}", requiredPpe=display_ppe, timestamp=timestamp, frameNumber=frame_number, confidence=item.confidence, cameraId=camera_id, zone="TEST-ZONE", evidenceImage=evidence))
                         self._active_incidents.add(key)
                 elif key in self._active_incidents and state == "COMPLIANT":
                     self._active_incidents.remove(key)
                 ppe_states[name] = state
+                if name == "Glass":
+                    ppe_states["Goggles"] = state
+                    ppe_states["Safety Goggles"] = state
             person_summaries.append(PersonSafetySchema(trackId=str(track_id), boundingBox=BoundingBoxSchema(x=person_box[0] / width, y=person_box[1] / height, width=(person_box[2] - person_box[0]) / width, height=(person_box[3] - person_box[1]) / height), visible=visible, ppeStates=ppe_states, violationTypes=violation_types, skeleton=skeleton))
 
+        ppe_summary = PPESummarySchema(
+            person=len(persons) > 0,
+            helmet=any(s.ppeStates.get("Helmet") in {"CONFIRMED", "COMPLIANT"} for s in person_summaries),
+            vest=any(s.ppeStates.get("Vest") in {"CONFIRMED", "COMPLIANT"} for s in person_summaries),
+            gloves=any(s.ppeStates.get("Glove") in {"CONFIRMED", "COMPLIANT"} for s in person_summaries),
+            shoes=any(s.ppeStates.get("Boots") in {"CONFIRMED", "COMPLIANT"} for s in person_summaries),
+            mask=any(s.ppeStates.get("Mask") in {"CONFIRMED", "COMPLIANT"} for s in person_summaries),
+            goggles=any(s.ppeStates.get("Glass") in {"CONFIRMED", "COMPLIANT"} or s.ppeStates.get("Goggles") in {"CONFIRMED", "COMPLIANT"} for s in person_summaries),
+        )
+
+        fire_smoke_schema = FireSmokeSchema(
+            hasFire=hazard_res.fire.has_fire,
+            fireConfidence=hazard_res.fire.confidence,
+            fireBbox=BoundingBoxSchema(
+                x=hazard_res.fire.bbox[0],
+                y=hazard_res.fire.bbox[1],
+                width=hazard_res.fire.bbox[2],
+                height=hazard_res.fire.bbox[3],
+            ) if hazard_res.fire.bbox else None,
+            hasSmoke=hazard_res.smoke.has_smoke,
+            smokeConfidence=hazard_res.smoke.confidence,
+            smokeBbox=BoundingBoxSchema(
+                x=hazard_res.smoke.bbox[0],
+                y=hazard_res.smoke.bbox[1],
+                width=hazard_res.smoke.bbox[2],
+                height=hazard_res.smoke.bbox[3],
+            ) if hazard_res.smoke.bbox else None,
+            smokeDensity=hazard_res.smoke.density,
+        )
+
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-        return VisionFrameResponse(timestamp=timestamp, cameraId=camera_id, source=source, detections=detections, persons=person_summaries, skeletons=all_skeletons, incidents=incidents, inferenceTimeMs=elapsed_ms)
+        return VisionFrameResponse(
+            timestamp=timestamp,
+            cameraId=camera_id,
+            source=source,
+            detections=detections,
+            ppeSummary=ppe_summary,
+            fireSmoke=fire_smoke_schema,
+            persons=person_summaries,
+            skeletons=all_skeletons,
+            incidents=incidents,
+            inferenceTimeMs=elapsed_ms,
+        )
 
 
 def create_ppe_detector() -> VisionDetector:

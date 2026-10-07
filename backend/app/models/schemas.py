@@ -35,6 +35,7 @@ class PPESummarySchema(BaseModel):
     gloves: bool = Field(False, description="Compliant safety gloves detected")
     shoes: bool = Field(False, description="Compliant safety footwear detected")
     mask: bool = Field(False, description="Compliant safety face mask detected")
+    goggles: bool = Field(False, description="Compliant safety goggles / glasses detected")
     confidences: Optional[Dict[str, float]] = Field(default_factory=dict)
 
 
@@ -96,7 +97,7 @@ class VisionFrameResponse(BaseModel):
 
 class VisionIncidentSchema(BaseModel):
     incidentId: str
-    trackId: str
+    trackId: Optional[str] = "HAZARD"
     violationType: str
     requiredPpe: str
     timestamp: str

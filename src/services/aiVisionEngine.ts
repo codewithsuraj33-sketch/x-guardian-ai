@@ -295,10 +295,18 @@ function drawDetectionBox(
     strokeColor = '#10b981';
     fillColor = 'rgba(16, 185, 129, 0.15)';
     labelText = `GLOVES [PASS] • ${Math.round(confidence * 100)}%`;
-  } else if (className === 'shoes') {
+  } else if (className === 'shoes' || className === 'boots') {
     strokeColor = '#10b981';
     fillColor = 'rgba(16, 185, 129, 0.15)';
     labelText = `SAFETY BOOTS [PASS] • ${Math.round(confidence * 100)}%`;
+  } else if (className === 'goggles' || className === 'glass' || className === 'glasses') {
+    strokeColor = '#eab308';
+    fillColor = 'rgba(234, 179, 8, 0.18)';
+    labelText = `SAFETY GOGGLES [PASS] • ${Math.round(confidence * 100)}%`;
+  } else if (className === 'mask') {
+    strokeColor = '#06b6d4';
+    fillColor = 'rgba(6, 182, 212, 0.15)';
+    labelText = `FACE MASK [PASS] • ${Math.round(confidence * 100)}%`;
   } else if (className === 'fire') {
     strokeColor = '#ef4444';
     fillColor = 'rgba(239, 68, 68, 0.25)';
@@ -483,6 +491,7 @@ function drawHUDTelemetry(
       { name: 'HI-VIS VEST', ok: ppeSummary.vest },
       { name: 'SAFETY BOOTS', ok: ppeSummary.shoes },
       { name: 'GLOVES', ok: ppeSummary.gloves },
+      { name: 'GOGGLES', ok: ppeSummary.goggles ?? true },
     ];
 
     let startX = 26;
@@ -490,7 +499,7 @@ function drawHUDTelemetry(
       ctx.fillStyle = item.ok ? '#10b981' : '#f43f5e';
       ctx.font = 'bold 10px monospace';
       ctx.fillText(`${item.ok ? '✓' : '✗'} ${item.name}: ${item.ok ? 'PASS' : 'MISSING'}`, startX, stripY + 18);
-      startX += 145;
+      startX += 115;
     });
   }
 
@@ -567,6 +576,18 @@ export function generateSyntheticFrameDetections(
     });
   }
 
+  // Safety Goggles
+  if (isCompliant) {
+    detections.push({
+      detectionId: `goggles-1`,
+      className: 'glass',
+      confidence: 0.94,
+      boundingBox: { x: 0.46, y: 0.17, width: 0.10, height: 0.04 },
+      trackId: 'TRK-101',
+      timestamp: nowIso,
+    });
+  }
+
   // Fire detection if triggered
   if (hasFire) {
     detections.push({
@@ -627,11 +648,13 @@ export function generateSyntheticFrameDetections(
       vest: isCompliant,
       gloves: isCompliant,
       shoes: true,
+      goggles: isCompliant,
       confidences: {
         helmet: isCompliant ? 0.93 : 0.0,
         vest: isCompliant ? 0.91 : 0.0,
         gloves: isCompliant ? 0.87 : 0.0,
         shoes: 0.89,
+        goggles: isCompliant ? 0.94 : 0.0,
         person: 0.96,
       },
     },

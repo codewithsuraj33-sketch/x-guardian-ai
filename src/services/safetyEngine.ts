@@ -28,6 +28,14 @@ function calcPPEScore(ppe: PPEStatus): { score: number; violations: string[] } {
     score += PPE_PENALTIES.shoes;
     violations.push('Safety Shoes Missing');
   }
+  if (ppe.goggles === false) {
+    score += PPE_PENALTIES.goggles;
+    violations.push('Safety Goggles Missing');
+  }
+  if (ppe.mask === false) {
+    score += PPE_PENALTIES.mask;
+    violations.push('Face Mask Missing');
+  }
 
   return { score, violations };
 }

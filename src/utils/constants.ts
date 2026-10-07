@@ -10,6 +10,8 @@ export const PPE_PENALTIES = {
   vest: 20,
   gloves: 20,
   shoes: 10,
+  mask: 15,
+  goggles: 20,
 } as const;
 
 /** Penalty for being in a restricted zone */

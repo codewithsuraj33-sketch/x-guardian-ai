@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────
 
 import { PPEStatus } from '../types';
-import { HardHat, Shirt, Hand, Footprints } from 'lucide-react';
+import { HardHat, Shirt, Hand, Footprints, Glasses } from 'lucide-react';
 
 interface PPEStatusDisplayProps {
   ppe: PPEStatus;
@@ -15,6 +15,7 @@ const PPE_ITEMS: { key: keyof PPEStatus; label: string; Icon: React.ComponentTyp
   { key: 'vest', label: 'Vest', Icon: Shirt },
   { key: 'gloves', label: 'Gloves', Icon: Hand },
   { key: 'shoes', label: 'Shoes', Icon: Footprints },
+  { key: 'goggles', label: 'Goggles', Icon: Glasses },
 ];
 
 export default function PPEStatusDisplay({ ppe, compact = false }: PPEStatusDisplayProps) {

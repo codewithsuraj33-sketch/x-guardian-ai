@@ -18,6 +18,10 @@ import {
   Sliders,
   Check,
   X,
+  Flame,
+  Volume2,
+  VolumeX,
+  Bell,
 } from 'lucide-react';
 import {
   CameraErrorInfo,
@@ -45,16 +49,27 @@ import { COCO_SKELETON_BONES } from '../services/aiVisionEngine';
 import { useSafety } from '../context/SafetyContext';
 import { useFactory } from '../context/FactoryContext';
 import CCTVMatrix from '../components/CCTVMatrix';
+import { audioAlert } from '../utils/audioAlert';
 
 type InputMode = 'LIVE_CAMERA' | 'RECORDED_VIDEO' | 'IMAGE';
 type InferenceState = 'IDLE' | 'ANALYZING' | 'READY' | 'STOPPED' | 'ERROR';
 
 function displayLabel(detection: Detection): string {
+  const c = detection.className.toLowerCase();
+  if (c === 'fire') return '🔥 FIRE HAZARD';
+  if (c === 'smoke') return '💨 SMOKE';
+  if (c === 'glass' || c === 'glasses' || c === 'goggles') return 'safety goggles';
   return detection.className.replaceAll('_', ' ');
 }
 
 function getPpeBadgeColor(className: string): { border: string; bg: string; text: string } {
   const c = className.toLowerCase();
+  if (c.includes('fire')) {
+    return { border: 'border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.8)]', bg: 'bg-red-600', text: 'text-white' };
+  }
+  if (c.includes('smoke')) {
+    return { border: 'border-orange-400', bg: 'bg-orange-500', text: 'text-white' };
+  }
   if (c.includes('helmet') || c.includes('hardhat')) {
     return { border: 'border-cyan-400', bg: 'bg-cyan-400', text: 'text-slate-950' };
   }
@@ -70,6 +85,9 @@ function getPpeBadgeColor(className: string): { border: string; bg: string; text
   if (c.includes('mask')) {
     return { border: 'border-sky-400', bg: 'bg-sky-400', text: 'text-slate-950' };
   }
+  if (c.includes('glass') || c.includes('goggle')) {
+    return { border: 'border-yellow-400', bg: 'bg-yellow-400', text: 'text-slate-950' };
+  }
   return { border: 'border-blue-400', bg: 'bg-blue-400', text: 'text-slate-950' };
 }
 
@@ -79,6 +97,9 @@ function getPpeStateValue(ppeStates: Record<string, string>, name: string): stri
   if (name === 'Shoes' && ppeStates['Boots']) return ppeStates['Boots'];
   if (name === 'Glove' && ppeStates['Gloves']) return ppeStates['Gloves'];
   if (name === 'Gloves' && ppeStates['Glove']) return ppeStates['Glove'];
+  if (['Glass', 'Goggles', 'Safety Goggles'].includes(name)) {
+    return ppeStates['Glass'] || ppeStates['Goggles'] || ppeStates['Glasses'] || 'UNKNOWN';
+  }
   return 'UNKNOWN';
 }
 
@@ -380,6 +401,14 @@ function createSampleDetection(presetType: string, cameraId: string): VisionFram
           trackId: 'TRK-101',
           timestamp: nowIso,
         },
+        {
+          detectionId: 'det-goggles-1',
+          className: 'glass',
+          boundingBox: { x: 0.46, y: 0.16, width: 0.11, height: 0.05 },
+          confidence: 0.95,
+          trackId: 'TRK-101',
+          timestamp: nowIso,
+        },
       ],
       persons: [
         {
@@ -392,6 +421,8 @@ function createSampleDetection(presetType: string, cameraId: string): VisionFram
             Boots: 'CONFIRMED',
             Glove: 'CONFIRMED',
             Mask: 'COMPLIANT',
+            Glass: 'CONFIRMED',
+            Goggles: 'CONFIRMED',
           },
           violationTypes: [],
           skeleton: {
@@ -457,6 +488,7 @@ function createSampleDetection(presetType: string, cameraId: string): VisionFram
         gloves: true,
         shoes: true,
         mask: true,
+        goggles: true,
       },
     };
   }
@@ -598,6 +630,8 @@ export default function Cameras() {
   const imageRef = useRef<HTMLImageElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const lastBeepTimeRef = useRef<number>(0);
+  const [isAudioMuted, setIsAudioMuted] = useState(audioAlert.getIsMuted());
 
   const [mediaLayout, setMediaLayout] = useState({ width: 0, height: 0, offsetX: 0, offsetY: 0 });
 
@@ -608,6 +642,7 @@ export default function Cameras() {
     ...(settings.glovesRequired ? ['Glove'] : []),
     ...(settings.shoesRequired ? ['Boots'] : []),
     ...(settings.maskRequired ? ['Mask'] : []),
+    ...(settings.gogglesRequired ? ['Glass'] : []),
   ];
 
   // Currently focused camera object
@@ -700,10 +735,43 @@ export default function Cameras() {
       setInferenceState('READY');
       setInferenceError(null);
 
+      // 1. Audio Siren for Fire & Smoke Emergency
+      const hasActiveFire = Boolean(nextResult.fireSmoke?.hasFire);
+      const hasCriticalSmoke = Boolean(
+        nextResult.fireSmoke?.hasSmoke && (nextResult.fireSmoke?.smokeDensity ?? 0) > 30
+      );
+
+      if (settings.audioAlert && (hasActiveFire || hasCriticalSmoke)) {
+        audioAlert.playEmergencySiren();
+      } else if (!hasActiveFire && !hasCriticalSmoke && audioAlert.getIsPlaying()) {
+        audioAlert.stopSiren();
+      }
+
+      // 2. Audio Warning Beep for Missing Required PPE or Worker Fall
+      if (settings.audioAlert && !hasActiveFire && !hasCriticalSmoke) {
+        const hasMissingPpeOrHazard = nextResult.persons?.some((person) => {
+          if (!person.visible) return false;
+          if (person.skeleton?.isFall) return true;
+          return requiredPpeList.some((gear) => {
+            const st = getPpeStateValue(person.ppeStates, gear);
+            return !isPpeStateConfirmed(st);
+          });
+        });
+
+        if (hasMissingPpeOrHazard) {
+          const now = Date.now();
+          if (now - lastBeepTimeRef.current >= 1200) {
+            lastBeepTimeRef.current = now;
+            audioAlert.playWarningBeep();
+          }
+        }
+      }
+
       nextResult.incidents?.forEach((incident) => {
         const isCritical =
           incident.violationType.toLowerCase().includes('fall') ||
-          incident.violationType.toLowerCase().includes('collapse');
+          incident.violationType.toLowerCase().includes('collapse') ||
+          incident.violationType.toLowerCase().includes('fire');
         const severity = isCritical ? RiskLevel.CRITICAL : RiskLevel.HIGH;
         addIncident({
           incidentId: incident.incidentId,
@@ -738,7 +806,7 @@ export default function Cameras() {
         });
       });
     },
-    [addIncident, factoryDispatch]
+    [addIncident, factoryDispatch, settings.audioAlert, requiredPpeList]
   );
 
   // Poll backend health
@@ -767,6 +835,7 @@ export default function Cameras() {
     () => () => {
       stopCameraStream(stream);
       if (videoUrl) URL.revokeObjectURL(videoUrl);
+      audioAlert.stopSiren();
     },
     [stream, videoUrl]
   );
@@ -829,6 +898,8 @@ export default function Cameras() {
   const startCamera = useCallback(async () => {
     setCameraError(null);
     setStreamState(CameraStreamState.REQUESTING_PERMISSION);
+    // Touch audio context to satisfy browser autoplay security policy
+    audioAlert.playWarningBeep();
     try {
       const nextStream = await startCameraStream({ facingMode });
       setStream(nextStream);
@@ -846,6 +917,7 @@ export default function Cameras() {
     setStream(null);
     setStreamState(CameraStreamState.STOPPED);
     setDetectionActive(false);
+    audioAlert.stopSiren();
   };
 
   const switchCamera = async () => {
@@ -1237,6 +1309,53 @@ export default function Cameras() {
                   ))}
                 </div>
               )}
+
+              {/* Live Audio Alarm Tests & Mute Control */}
+              <div className="flex items-center gap-1.5 border-l border-slate-800 pl-2">
+                <button
+                  type="button"
+                  onClick={() => audioAlert.playWarningBeep()}
+                  className="inline-flex items-center gap-1 rounded-md border border-amber-600/70 bg-amber-950/40 px-2.5 py-1 text-xs font-semibold text-amber-300 hover:bg-amber-900/50 transition-colors"
+                  title="Test short warning beep (for missing PPE violations)"
+                >
+                  <Volume2 size={13} className="text-amber-400" />
+                  <span>🔊 PPE Beep</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (audioAlert.getIsPlaying()) {
+                      audioAlert.stopSiren();
+                    } else {
+                      audioAlert.playEmergencySiren();
+                      setTimeout(() => audioAlert.stopSiren(), 3000);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1 rounded-md border border-red-600/80 bg-red-950/40 px-2.5 py-1 text-xs font-semibold text-red-300 hover:bg-red-900/60 transition-colors"
+                  title="Test industrial emergency siren (fire / smoke hazard) — auto-stops after 3s"
+                >
+                  <Flame size={13} className="text-red-400 animate-pulse" />
+                  <span>🚨 Fire Siren</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const muted = audioAlert.toggleMute();
+                    setIsAudioMuted(muted);
+                  }}
+                  className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-semibold transition-colors ${
+                    isAudioMuted
+                      ? 'border-slate-700 bg-slate-900 text-slate-400'
+                      : 'border-emerald-700/60 bg-emerald-950/50 text-emerald-300'
+                  }`}
+                  title={isAudioMuted ? 'Alarms Muted — Click to unmute' : 'Alarms Active — Click to mute'}
+                >
+                  {isAudioMuted ? <VolumeX size={13} /> : <Volume2 size={13} className="text-emerald-400" />}
+                  <span>{isAudioMuted ? 'Muted' : 'Audio ON'}</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1254,6 +1373,7 @@ export default function Cameras() {
                 { key: 'glovesRequired', label: 'Work Gloves', icon: '🧤' },
                 { key: 'shoesRequired', label: 'Safety Boots', icon: '🥾' },
                 { key: 'maskRequired', label: 'Face Mask', icon: '😷' },
+                { key: 'gogglesRequired', label: 'Safety Goggles', icon: '🥽' },
               ].map(({ key, label, icon }) => {
                 const isActive = settings[key as keyof typeof settings] as boolean;
 
@@ -1283,6 +1403,45 @@ export default function Cameras() {
                 ref={containerRef}
                 className="relative flex aspect-video items-center justify-center bg-slate-950 overflow-hidden"
               >
+                {/* Real-time Optical Fire & Smoke Emergency HUD Banners */}
+                {result?.fireSmoke?.hasFire && (
+                  <div className="absolute top-3 inset-x-3 z-40 flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl bg-red-950/95 border-2 border-red-500 shadow-2xl backdrop-blur-md animate-pulse">
+                    <div className="flex items-center gap-2.5">
+                      <Flame size={22} className="text-red-400 animate-bounce" />
+                      <div>
+                        <p className="font-bold text-xs uppercase tracking-wide text-red-200">
+                          🚨 CRITICAL HAZARD: FLAME / FIRE DETECTED
+                        </p>
+                        <p className="text-[11px] text-red-300 font-mono">
+                          Confidence: {Math.round(result.fireSmoke.fireConfidence * 100)}% | Optical Flame Analysis | Auto-Siren Active
+                        </p>
+                      </div>
+                    </div>
+                    <span className="px-2.5 py-1 rounded bg-red-600 text-xs font-black uppercase tracking-wider text-white shadow">
+                      EVACUATE
+                    </span>
+                  </div>
+                )}
+
+                {result?.fireSmoke?.hasSmoke && result.fireSmoke.smokeDensity > 20 && !result?.fireSmoke?.hasFire && (
+                  <div className="absolute top-3 inset-x-3 z-40 flex items-center justify-between gap-3 px-4 py-2 rounded-xl bg-amber-950/95 border border-amber-500/80 shadow-xl backdrop-blur-md">
+                    <div className="flex items-center gap-2.5">
+                      <AlertTriangle size={20} className="text-amber-400" />
+                      <div>
+                        <p className="font-bold text-xs uppercase tracking-wide text-amber-200">
+                          ⚠️ WARNING: DENSE SMOKE / HAZE DETECTED
+                        </p>
+                        <p className="text-[11px] text-amber-300 font-mono">
+                          Smoke Density: {result.fireSmoke.smokeDensity}% | Confidence: {Math.round(result.fireSmoke.smokeConfidence * 100)}%
+                        </p>
+                      </div>
+                    </div>
+                    <span className="px-2 py-0.5 rounded bg-amber-600 text-[11px] font-bold uppercase text-white shadow">
+                      VENTILATE
+                    </span>
+                  </div>
+                )}
+
                 {/* 1. Live Camera Stream */}
                 {mode === 'LIVE_CAMERA' && (
                   <div className="relative h-full w-full">
@@ -1607,12 +1766,15 @@ export default function Cameras() {
                     { key: 'Glove', label: 'Industrial Work Gloves', required: settings.glovesRequired },
                     { key: 'Boots', label: 'Steel-Toe Safety Boots', required: settings.shoesRequired },
                     { key: 'Mask', label: 'Protective Face Mask', required: settings.maskRequired },
+                    { key: 'Glass', label: 'Safety Goggles / Eye Shield', required: settings.gogglesRequired },
                   ].map((item) => {
-                    const detectedInFrame = result?.detections?.some((d) =>
-                      d.className.toLowerCase().includes(item.key.toLowerCase()) ||
-                      (item.key === 'Boots' && d.className.toLowerCase().includes('shoe')) ||
-                      (item.key === 'Glove' && d.className.toLowerCase().includes('glove'))
-                    );
+                    const detectedInFrame = result?.detections?.some((d) => {
+                      const c = d.className.toLowerCase();
+                      if (item.key === 'Glass') return c.includes('glass') || c.includes('goggle');
+                      if (item.key === 'Boots') return c.includes('boot') || c.includes('shoe');
+                      if (item.key === 'Glove') return c.includes('glove');
+                      return c.includes(item.key.toLowerCase());
+                    });
 
                     return (
                       <div
@@ -1639,6 +1801,59 @@ export default function Cameras() {
                     );
                   })}
                 </div>
+              </div>
+
+              {/* Fire & Smoke Hazard Status Box */}
+              <div
+                className={`rounded-lg border p-3 space-y-1.5 transition-all ${
+                  result?.fireSmoke?.hasFire
+                    ? 'border-red-500/80 bg-red-950/50 shadow-lg shadow-red-950/40 animate-pulse'
+                    : result?.fireSmoke?.hasSmoke
+                    ? 'border-orange-500/80 bg-orange-950/40'
+                    : 'border-slate-800 bg-slate-950/60'
+                }`}
+              >
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-white flex items-center gap-1.5">
+                    <Flame
+                      size={13}
+                      className={
+                        result?.fireSmoke?.hasFire
+                          ? 'text-red-400 animate-bounce'
+                          : result?.fireSmoke?.hasSmoke
+                          ? 'text-orange-400'
+                          : 'text-slate-400'
+                      }
+                    />
+                    Fire &amp; Hazard Radar
+                  </span>
+                  <span className="font-mono text-[10px]">
+                    {result?.fireSmoke?.hasFire ? (
+                      <span className="text-red-400 font-bold">
+                        🔥 FLAME DETECTED ({Math.round(result.fireSmoke.fireConfidence * 100)}%)
+                      </span>
+                    ) : result?.fireSmoke?.hasSmoke ? (
+                      <span className="text-orange-400 font-bold">
+                        💨 SMOKE ({result.fireSmoke.smokeDensity}%)
+                      </span>
+                    ) : (
+                      <span className="text-emerald-400 flex items-center gap-1">
+                        <Check size={11} />
+                        CLEAR / SAFE
+                      </span>
+                    )}
+                  </span>
+                </div>
+                {result?.fireSmoke?.hasFire && (
+                  <p className="text-[11px] text-red-300">
+                    High thermal/chromatic combustion detected. Alarm siren triggered automatically.
+                  </p>
+                )}
+                {result?.fireSmoke?.hasSmoke && !result?.fireSmoke?.hasFire && (
+                  <p className="text-[11px] text-orange-300">
+                    Haze/plume detected in camera view. Verify ventilation or potential smolder.
+                  </p>
+                )}
               </div>
 
               {/* Detected Tracked Personnel */}

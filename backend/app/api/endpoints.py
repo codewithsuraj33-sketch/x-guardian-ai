@@ -195,6 +195,7 @@ async def list_workers(db: Session = Depends(get_db)):
                 "gloves": w.gloves,
                 "shoes": w.shoes,
                 "mask": w.mask,
+                "goggles": getattr(w, "goggles", True),
             },
         }
         for w in records

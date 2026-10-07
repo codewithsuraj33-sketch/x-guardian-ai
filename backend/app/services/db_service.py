@@ -139,6 +139,7 @@ def init_db():
                     gloves=True,
                     shoes=True,
                     mask=True,
+                    goggles=True,
                     violations="[]",
                 ),
                 WorkerDB(
@@ -154,6 +155,7 @@ def init_db():
                     gloves=True,
                     shoes=True,
                     mask=True,
+                    goggles=True,
                     violations="[]",
                 ),
                 WorkerDB(
@@ -169,7 +171,8 @@ def init_db():
                     gloves=False,
                     shoes=True,
                     mask=True,
-                    violations='["Missing Gloves"]',
+                    goggles=False,
+                    violations='["Missing Gloves", "Missing Safety Goggles"]',
                 ),
                 WorkerDB(
                     id="W-1004",
@@ -184,6 +187,7 @@ def init_db():
                     gloves=True,
                     shoes=True,
                     mask=True,
+                    goggles=True,
                     violations="[]",
                 ),
                 WorkerDB(
@@ -199,6 +203,7 @@ def init_db():
                     gloves=True,
                     shoes=True,
                     mask=True,
+                    goggles=True,
                     violations="[]",
                 ),
             ]
