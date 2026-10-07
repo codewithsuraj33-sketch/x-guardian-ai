@@ -1,9 +1,10 @@
 // ─────────────────────────────────────────────
 // X-Guardian — CCTV Multi-Camera Surveillance Matrix (Video Wall)
-// Simultaneous 4-Channel Industrial Feeds with Live Threat Overlays
+// Simultaneous 5-Channel Industrial Feeds with Live Threat Overlays & Real Feeds
 // ─────────────────────────────────────────────
 
-import { Camera, Zone, RiskLevel } from '../types';
+import { useEffect, useState } from 'react';
+import { Camera, Zone } from '../types';
 import {
   Camera as CameraIcon,
   Flame,
@@ -12,12 +13,13 @@ import {
   AlertTriangle,
   Maximize2,
   Radio,
+  Eye,
 } from 'lucide-react';
 
 interface CCTVMatrixProps {
   cameras: Camera[];
   zones: Zone[];
-  selectedCameraId: string;
+  selectedCameraId?: string;
   onSelectCamera: (cameraId: string) => void;
   activeHazard?: 'FIRE' | 'SMOKE' | 'PPE_VIOLATION' | 'NONE';
 }
@@ -29,33 +31,55 @@ export default function CCTVMatrix({
   onSelectCamera,
   activeHazard = 'NONE',
 }: CCTVMatrixProps) {
+  const [timecode, setTimecode] = useState<string>('');
+
+  useEffect(() => {
+    const updateTime = () => {
+      const d = new Date();
+      setTimecode(
+        d.toLocaleTimeString('en-US', { hour12: false }) +
+          '.' +
+          String(Math.floor(d.getMilliseconds() / 100))
+      );
+    };
+    updateTime();
+    const interval = setInterval(updateTime, 250);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900/90 p-5 backdrop-blur-md space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
         <div className="flex items-center gap-2.5">
           <div className="p-2 rounded-lg bg-blue-600/10 border border-blue-500/20 text-blue-400">
             <CameraIcon size={18} />
           </div>
           <div>
             <h2 className="text-base font-bold text-white tracking-wide">
-              Surveillance Grid Matrix (CCTV Video Wall)
+              Surveillance Grid Matrix (5-Channel CCTV Video Wall)
             </h2>
             <p className="text-xs text-slate-400">
-              Simultaneous AI multi-channel optical monitoring across industrial sectors
+              Simultaneous AI optical monitoring across all 5 industrial factory sectors
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 text-xs font-mono text-emerald-400">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-          <span>4 Channels Active • 30 FPS</span>
+        <div className="flex items-center gap-3 text-xs font-mono">
+          <div className="flex items-center gap-1.5 text-slate-400 bg-slate-950 px-2.5 py-1 rounded-md border border-slate-800">
+            <Radio size={12} className="text-blue-400 animate-pulse" />
+            <span>UTC {timecode || 'LIVE'}</span>
+          </div>
+          <div className="flex items-center gap-2 text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 px-2.5 py-1 rounded-md">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+            <span>5/5 Channels Active • 30 FPS</span>
+          </div>
         </div>
       </div>
 
-      {/* 4-Camera Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {cameras.slice(0, 4).map((cam, idx) => {
+      {/* 5-Camera Responsive Video Wall Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {cameras.map((cam, idx) => {
           const zone = zones.find((z) => z.id === cam.zoneId) || zones[idx];
           const isSelected = cam.cameraId === selectedCameraId;
 
@@ -63,6 +87,19 @@ export default function CCTVMatrix({
           const isFireCam = cam.cameraId === 'CAM-03' && (zone?.hasActiveFire || activeHazard === 'FIRE');
           const isSmokeCam = cam.cameraId === 'CAM-04' && (zone?.hasActiveSmoke || activeHazard === 'SMOKE');
           const isPPEViolCam = cam.cameraId === 'CAM-01' && activeHazard === 'PPE_VIOLATION';
+          const isRestrictedCam = cam.cameraId === 'CAM-05';
+
+          const feedImage =
+            cam.feedUrl ||
+            (cam.cameraId === 'CAM-01'
+              ? '/images/cam01_entry.jpg'
+              : cam.cameraId === 'CAM-02'
+              ? '/images/cam02_assembly.jpg'
+              : cam.cameraId === 'CAM-03'
+              ? '/images/cam03_welding.jpg'
+              : cam.cameraId === 'CAM-04'
+              ? '/images/cam04_storage.jpg'
+              : '/images/cam05_restricted.jpg');
 
           return (
             <div
@@ -70,41 +107,34 @@ export default function CCTVMatrix({
               onClick={() => onSelectCamera(cam.cameraId)}
               className={`relative rounded-xl overflow-hidden cursor-pointer transition-all duration-300 border group ${
                 isSelected
-                  ? 'border-blue-500 ring-2 ring-blue-500/30'
+                  ? 'border-blue-500 ring-2 ring-blue-500/50 shadow-[0_0_20px_rgba(59,130,246,0.3)]'
                   : isFireCam
                   ? 'border-rose-500 shadow-[0_0_20px_rgba(239,68,68,0.3)]'
                   : isSmokeCam
                   ? 'border-purple-500 shadow-[0_0_20px_rgba(168,85,247,0.3)]'
-                  : 'border-slate-800 hover:border-slate-600'
+                  : 'border-slate-800 hover:border-blue-500/60 hover:shadow-lg'
               } bg-slate-950`}
             >
               {/* Aspect Ratio 16:9 Viewport */}
               <div className="relative aspect-video w-full bg-slate-950 flex items-center justify-center overflow-hidden">
-                {/* Simulated CCTV Background Image Pattern */}
-                <div
-                  className="absolute inset-0 opacity-20"
-                  style={{
-                    backgroundImage: `radial-gradient(circle at 1px 1px, #38bdf8 1px, transparent 0)`,
-                    backgroundSize: '16px 16px',
+                {/* Real CCTV Feed Snapshot Background */}
+                <img
+                  src={feedImage}
+                  alt={`${cam.cameraId} Feed`}
+                  className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                  onError={(e) => {
+                    // Fallback to stylized background if image not found
+                    (e.target as HTMLElement).style.display = 'none';
                   }}
                 />
 
-                {/* Industrial Scanlines */}
-                <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%)] bg-[length:100%_4px] opacity-40" />
-
-                {/* Center Visual Mockup */}
-                <div className="relative z-10 text-center space-y-1">
-                  <span className="text-2xl font-black font-mono tracking-widest text-slate-700 select-none">
-                    FEED {cam.cameraId}
-                  </span>
-                  <p className="text-[11px] font-mono text-slate-400">
-                    {zone?.name.toUpperCase()} SECTOR
-                  </p>
-                </div>
+                {/* Industrial Scanlines & Vignette */}
+                <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.35)_50%)] bg-[length:100%_4px] opacity-40" />
+                <div className="absolute inset-0 pointer-events-none bg-gradient-to-t from-slate-950/80 via-transparent to-slate-950/60" />
 
                 {/* Threat Visual Overlays */}
                 {isFireCam && (
-                  <div className="absolute inset-0 bg-rose-950/40 border-2 border-rose-500 flex flex-col items-center justify-center p-3 animate-pulse">
+                  <div className="absolute inset-0 bg-rose-950/50 border-2 border-rose-500 flex flex-col items-center justify-center p-3 animate-pulse z-10">
                     <Flame size={32} className="text-rose-500 animate-bounce" />
                     <span className="mt-1 px-2.5 py-0.5 rounded bg-rose-600 text-white font-mono font-black text-xs uppercase tracking-wider">
                       CRITICAL FIRE DETECTED
@@ -116,7 +146,7 @@ export default function CCTVMatrix({
                 )}
 
                 {isSmokeCam && (
-                  <div className="absolute inset-0 bg-purple-950/40 border-2 border-purple-500 flex flex-col items-center justify-center p-3 animate-pulse">
+                  <div className="absolute inset-0 bg-purple-950/50 border-2 border-purple-500 flex flex-col items-center justify-center p-3 animate-pulse z-10">
                     <CloudFog size={32} className="text-purple-400" />
                     <span className="mt-1 px-2.5 py-0.5 rounded bg-purple-600 text-white font-mono font-black text-xs uppercase tracking-wider">
                       DENSE SMOKE PLUME
@@ -128,7 +158,7 @@ export default function CCTVMatrix({
                 )}
 
                 {isPPEViolCam && (
-                  <div className="absolute inset-0 bg-amber-950/30 border-2 border-amber-500 flex flex-col items-center justify-center p-3">
+                  <div className="absolute inset-0 bg-amber-950/40 border-2 border-amber-500 flex flex-col items-center justify-center p-3 z-10">
                     <AlertTriangle size={28} className="text-amber-400 animate-pulse" />
                     <span className="mt-1 px-2 py-0.5 rounded bg-amber-600 text-white font-mono font-black text-[11px] uppercase tracking-wider">
                       PPE GEAR VIOLATION
@@ -141,34 +171,50 @@ export default function CCTVMatrix({
 
                 {/* Normal / Compliant State Overlay */}
                 {!isFireCam && !isSmokeCam && !isPPEViolCam && (
-                  <div className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-900/80 backdrop-blur-md border border-slate-700/60 text-[10px] font-mono text-emerald-400">
+                  <div className="absolute bottom-2 left-2 z-10 flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-900/90 backdrop-blur-md border border-slate-700/60 text-[10px] font-mono text-emerald-400">
                     <ShieldCheck size={11} />
-                    <span>ALL GEAR COMPLIANT</span>
+                    <span>{isRestrictedCam ? 'PERIMETER SECURED' : 'PPE COMPLIANT'}</span>
                   </div>
                 )}
 
-                {/* Top Corner Watermark */}
-                <div className="absolute top-2 left-2 flex items-center gap-1.5">
-                  <span className="px-1.5 py-0.5 rounded bg-slate-950/90 text-[10px] font-mono font-bold text-slate-200 border border-slate-700">
+                {/* Top Left Camera Badge */}
+                <div className="absolute top-2 left-2 z-10 flex items-center gap-1.5">
+                  <span className="px-1.5 py-0.5 rounded bg-slate-950/90 text-[10px] font-mono font-bold text-white border border-slate-700">
                     {cam.cameraId}
                   </span>
-                  <span className="text-[10px] font-mono text-slate-400">
-                    {zone?.name}
+                  <span className="px-1.5 py-0.5 rounded bg-slate-900/80 text-[10px] font-mono text-slate-300 border border-slate-800">
+                    {zone?.name || `Zone ${idx + 1}`}
                   </span>
                 </div>
 
-                {/* Top Right Live Dot */}
-                <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-950/90 border border-slate-700 text-[10px] font-mono text-emerald-400">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                {/* Top Right Live REC Dot */}
+                <div className="absolute top-2 right-2 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-950/90 border border-slate-700 text-[10px] font-mono text-rose-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
                   <span>REC</span>
                 </div>
 
+                {/* Bottom Right Resolution & FPS */}
+                <div className="absolute bottom-2 right-2 z-10 text-[9px] font-mono text-slate-300 bg-slate-950/80 px-1.5 py-0.5 rounded border border-slate-800">
+                  {cam.resolution || '1080p'} • {cam.fps || 30} FPS
+                </div>
+
                 {/* Hover overlay hint */}
-                <div className="absolute inset-0 bg-blue-600/10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                  <span className="px-3 py-1 rounded-lg bg-slate-900/90 text-white text-xs font-mono font-bold flex items-center gap-1.5 shadow-lg border border-slate-700">
-                    <Maximize2 size={12} />
-                    <span>Expand Deep-Dive View</span>
+                <div className="absolute inset-0 bg-blue-600/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none z-20">
+                  <span className="px-3 py-1.5 rounded-lg bg-slate-900/95 text-white text-xs font-mono font-bold flex items-center gap-1.5 shadow-xl border border-blue-500/50">
+                    <Eye size={13} className="text-blue-400" />
+                    <span>Inspect & Run AI Detection</span>
                   </span>
+                </div>
+              </div>
+
+              {/* Card Footer Bar */}
+              <div className="px-3 py-2 bg-slate-900 flex items-center justify-between text-xs border-t border-slate-800/80">
+                <div className="truncate font-medium text-slate-200">
+                  {cam.name || `${zone?.name} Surveillance`}
+                </div>
+                <div className="text-[11px] font-mono text-blue-400 flex items-center gap-1">
+                  <span>SELECT</span>
+                  <Maximize2 size={11} />
                 </div>
               </div>
             </div>

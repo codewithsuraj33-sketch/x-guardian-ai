@@ -87,6 +87,30 @@ export function SafetyProvider({ children }: { children: ReactNode }) {
     'OFFLINE' | 'ACTIVE' | 'STOPPED' | 'REQUESTING' | 'ERROR'
   >('OFFLINE');
 
+  // Sync incidents with SQLite database on mount
+  useEffect(() => {
+    fetch('http://127.0.0.1:8000/api/v1/incidents')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((dbIncidents) => {
+        if (Array.isArray(dbIncidents) && dbIncidents.length > 0) {
+          setIncidents((prev) => {
+            const existingIds = new Set(prev.map((i) => i.incidentId));
+            const fresh = dbIncidents.filter((i: Incident) => !existingIds.has(i.incidentId));
+            const merged = [...fresh, ...prev];
+            try {
+              localStorage.setItem(STORAGE_KEY_INCIDENTS, JSON.stringify(merged));
+            } catch {
+              // ignore
+            }
+            return merged;
+          });
+        }
+      })
+      .catch(() => {
+        // Backend offline, fallback to local storage
+      });
+  }, []);
+
   // Save settings on update
   const updateSettings = useCallback((newSettings: Partial<SystemSettings>) => {
     setSettings((prev) => {
@@ -141,7 +165,7 @@ export function SafetyProvider({ children }: { children: ReactNode }) {
     [settings.audioAlert, settings.browserNotification]
   );
 
-  // Update lifecycle status of an incident
+  // Update lifecycle status of an incident and sync to SQLite
   const updateIncidentStatus = useCallback((incidentId: string, newStatus: IncidentStatus) => {
     setIncidents((prev) => {
       const updated = prev.map((inc) =>
@@ -154,6 +178,14 @@ export function SafetyProvider({ children }: { children: ReactNode }) {
       }
       return updated;
     });
+
+    // Sync to SQLite database
+    const form = new FormData();
+    form.append('status', newStatus);
+    fetch(`http://127.0.0.1:8000/api/v1/incidents/${encodeURIComponent(incidentId)}`, {
+      method: 'PATCH',
+      body: form,
+    }).catch(() => undefined);
   }, []);
 
   // Reset to rich sample factory audit history

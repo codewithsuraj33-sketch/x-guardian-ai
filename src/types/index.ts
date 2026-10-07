@@ -73,6 +73,10 @@ export interface Camera {
   cameraId: string;
   zoneId: string;
   status: CameraStatus;
+  name?: string;
+  feedUrl?: string;
+  resolution?: string;
+  fps?: number;
 }
 
 /** A safety incident recorded by the system */
@@ -291,6 +295,7 @@ export interface RecordedFootagePreset {
   description: string;
   hazardType: HazardType | 'COMPLIANT';
   tag: string;
+  imageSrc?: string;
 }
 
 export interface DispatchedPersonnel {
