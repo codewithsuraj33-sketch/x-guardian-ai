@@ -49,7 +49,7 @@ export default function Dashboard() {
                 { id: 'CAM-03', label: 'Welding Bay', img: '/images/cam03_welding.jpg' },
                 { id: 'CAM-04', label: 'Storage Area', img: '/images/cam04_storage.jpg' },
                 { id: 'CAM-05', label: 'Restricted Zone', img: '/images/cam05_restricted.jpg' },
-                { id: 'PPE-AUDIT', label: 'Worker Full PPE', img: '/images/worker_ppe_compliant.jpg' },
+                { id: 'HAZARD-01', label: '🔥 Fire & Smoke Alert', img: '/images/fire_smoke_hazard.jpg' },
               ].map((item) => (
                 <Link
                   key={item.id}

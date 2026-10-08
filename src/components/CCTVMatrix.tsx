@@ -32,6 +32,7 @@ export default function CCTVMatrix({
   activeHazard = 'NONE',
 }: CCTVMatrixProps) {
   const [timecode, setTimecode] = useState<string>('');
+  const [simulatedHazard, setSimulatedHazard] = useState<'NONE' | 'FIRE' | 'PPE'>('NONE');
 
   useEffect(() => {
     const updateTime = () => {
@@ -77,6 +78,51 @@ export default function CCTVMatrix({
         </div>
       </div>
 
+      {/* Surveillance Threat Simulation Selector */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs">
+        <div className="flex items-center gap-2 text-slate-300 font-mono font-semibold">
+          <AlertTriangle size={14} className="text-amber-400" />
+          <span>SURVEILLANCE HAZARD SIMULATION:</span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSimulatedHazard(simulatedHazard === 'FIRE' ? 'NONE' : 'FIRE')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold border transition-all ${
+              simulatedHazard === 'FIRE'
+                ? 'border-red-500 bg-red-950 text-red-200 ring-2 ring-red-500/50 shadow-md shadow-red-950/50'
+                : 'border-red-900/60 bg-red-950/30 text-red-300 hover:border-red-600 hover:bg-red-900/50'
+            }`}
+          >
+            <Flame size={12} className="text-red-400 animate-pulse" />
+            <span>🔥 Fire &amp; Smoke Emergency (CAM-03)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setSimulatedHazard(simulatedHazard === 'PPE' ? 'NONE' : 'PPE')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold border transition-all ${
+              simulatedHazard === 'PPE'
+                ? 'border-amber-500 bg-amber-950 text-amber-200 ring-2 ring-amber-500/50 shadow-md shadow-amber-950/50'
+                : 'border-amber-900/60 bg-amber-950/30 text-amber-300 hover:border-amber-600'
+            }`}
+          >
+            <AlertTriangle size={12} className="text-amber-400" />
+            <span>⚠️ PPE Non-Compliance (CAM-01)</span>
+          </button>
+
+          {simulatedHazard !== 'NONE' && (
+            <button
+              type="button"
+              onClick={() => setSimulatedHazard('NONE')}
+              className="px-2.5 py-1 rounded-lg border border-slate-700 bg-slate-900 text-slate-400 hover:text-white text-xs font-mono"
+            >
+              Reset Feeds
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* 5-Camera Responsive Video Wall Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {cameras.map((cam, idx) => {
@@ -84,22 +130,29 @@ export default function CCTVMatrix({
           const isSelected = cam.cameraId === selectedCameraId;
 
           // Determine simulated threat for each feed
-          const isFireCam = cam.cameraId === 'CAM-03' && (zone?.hasActiveFire || activeHazard === 'FIRE');
-          const isSmokeCam = cam.cameraId === 'CAM-04' && (zone?.hasActiveSmoke || activeHazard === 'SMOKE');
-          const isPPEViolCam = cam.cameraId === 'CAM-01' && activeHazard === 'PPE_VIOLATION';
+          const isFireCam =
+            cam.cameraId === 'CAM-03' &&
+            (zone?.hasActiveFire || activeHazard === 'FIRE' || simulatedHazard === 'FIRE');
+          const isSmokeCam =
+            cam.cameraId === 'CAM-04' &&
+            (zone?.hasActiveSmoke || activeHazard === 'SMOKE');
+          const isPPEViolCam =
+            cam.cameraId === 'CAM-01' &&
+            (activeHazard === 'PPE_VIOLATION' || simulatedHazard === 'PPE');
           const isRestrictedCam = cam.cameraId === 'CAM-05';
 
-          const feedImage =
-            cam.feedUrl ||
-            (cam.cameraId === 'CAM-01'
-              ? '/images/cam01_entry.jpg'
-              : cam.cameraId === 'CAM-02'
-              ? '/images/cam02_assembly.jpg'
-              : cam.cameraId === 'CAM-03'
-              ? '/images/cam03_welding.jpg'
-              : cam.cameraId === 'CAM-04'
-              ? '/images/cam04_storage.jpg'
-              : '/images/cam05_restricted.jpg');
+          const feedImage = isFireCam
+            ? '/images/fire_smoke_hazard.jpg'
+            : (cam.feedUrl ||
+               (cam.cameraId === 'CAM-01'
+                 ? '/images/cam01_entry.jpg'
+                 : cam.cameraId === 'CAM-02'
+                 ? '/images/cam02_assembly.jpg'
+                 : cam.cameraId === 'CAM-03'
+                 ? '/images/cam03_welding.jpg'
+                 : cam.cameraId === 'CAM-04'
+                 ? '/images/cam04_storage.jpg'
+                 : '/images/cam05_restricted.jpg'));
 
           return (
             <div

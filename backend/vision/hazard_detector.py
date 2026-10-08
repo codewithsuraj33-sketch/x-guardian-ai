@@ -41,7 +41,7 @@ class IndustrialHazardDetector:
 
     def __init__(
         self,
-        min_flame_pixels: int = 200,
+        min_flame_pixels: int = 800,
         min_smoke_pixels: int = 600,
         fire_conf_thresh: float = 0.65,
         smoke_conf_thresh: float = 0.60,
@@ -72,7 +72,13 @@ class IndustrialHazardDetector:
         # ─────────────────────────────────────────────
         # 2. Real-time Smoke Plume Detection
         # ─────────────────────────────────────────────
-        smoke_res = self._detect_smoke(bgr_image, w, h, flame_active=fire_res.has_fire)
+        smoke_res = self._detect_smoke(
+            bgr_image,
+            w,
+            h,
+            flame_active=fire_res.has_fire,
+            flame_bbox=fire_res.bbox,
+        )
 
         return HazardAnalysisResult(fire=fire_res, smoke=smoke_res)
 
@@ -126,37 +132,48 @@ class IndustrialHazardDetector:
                 py2 = min(proc_h, int(pbox[3] * scale))
                 flame_mask[py1:py2, px1:px2] = 0
 
-        contours, _ = cv2.findContours(flame_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Group contiguous burning flame tongues (pallets, machinery, open flame)
+        flame_grouped = cv2.dilate(flame_mask, cv2.getStructuringElement(cv2.MORPH_RECT, (11, 11)))
+        contours, _ = cv2.findContours(flame_grouped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        best_area = 0
-        best_bbox = None
-        scaled_min = max(int(self.min_flame_pixels * (scale * scale)), int(proc_w * proc_h * 0.00035))
+        scaled_min = max(int(self.min_flame_pixels * (scale * scale)), int(proc_w * proc_h * 0.002))
+        valid_flames = []
+        total_flame_area = 0
 
         for c in contours:
             area = cv2.contourArea(c)
             if area >= scaled_min:
                 bx, by, bw, bh = cv2.boundingRect(c)
-                # Flames rise vertically and flicker (aspect ratio bh/bw >= 0.65)
-                aspect = bh / max(bw, 1)
-                if aspect >= 0.65 and area > best_area:
-                    best_area = area
-                    if scale != 1.0:
-                        bx, by, bw, bh = int(bx / scale), int(by / scale), int(bw / scale), int(bh / scale)
-                    best_bbox = (
-                        round(max(0.0, bx / w), 4),
-                        round(max(0.0, by / h), 4),
-                        round(min(1.0, bw / w), 4),
-                        round(min(1.0, bh / h), 4),
-                    )
+                valid_flames.append((bx, by, bw, bh, area))
+                total_flame_area += area
 
-        if best_bbox and best_area >= scaled_min:
-            norm_area_ratio = min(1.0, best_area / (w * h * 0.04 * scale * scale))
-            conf = min(0.98, max(0.74, 0.76 + norm_area_ratio * 0.22))
+        if valid_flames:
+            min_bx = min(f[0] for f in valid_flames)
+            min_by = min(f[1] for f in valid_flames)
+            max_bx = max(f[0] + f[2] for f in valid_flames)
+            max_by = max(f[1] + f[3] for f in valid_flames)
+
+            bw_comb = max_bx - min_bx
+            bh_comb = max_by - min_by
+            if scale != 1.0:
+                min_bx = int(min_bx / scale)
+                min_by = int(min_by / scale)
+                bw_comb = int(bw_comb / scale)
+                bh_comb = int(bh_comb / scale)
+
+            best_bbox = (
+                round(max(0.0, min_bx / w), 4),
+                round(max(0.0, min_by / h), 4),
+                round(min(1.0, bw_comb / w), 4),
+                round(min(1.0, bh_comb / h), 4),
+            )
+            norm_area_ratio = min(1.0, total_flame_area / (w * h * 0.04 * scale * scale))
+            conf = min(0.98, max(0.76, 0.78 + norm_area_ratio * 0.20))
             return FireDetectionResult(
                 has_fire=True,
                 confidence=round(conf, 3),
                 bbox=best_bbox,
-                area_pixels=int(best_area / (scale * scale)),
+                area_pixels=int(total_flame_area / (scale * scale)),
             )
 
         return FireDetectionResult(has_fire=False, confidence=0.0, bbox=None, area_pixels=0)
@@ -167,10 +184,11 @@ class IndustrialHazardDetector:
         w: int,
         h: int,
         flame_active: bool = False,
+        flame_bbox: Optional[Tuple[float, float, float, float]] = None,
     ) -> SmokeDetectionResult:
         """
-        Smoke plume detection using low color variance (grey/white) and amorphous morphology.
-        Utilizes Laplacian edge variance to distinguish true smoke haze from textured solid floors/walls.
+        Smoke plume detection supporting both dark combustion soot plumes
+        and diffuse white/grey smoke haze columns.
         """
         scale = 1.0
         proc_img = bgr
@@ -182,61 +200,85 @@ class IndustrialHazardDetector:
         hsv = cv2.cvtColor(proc_img, cv2.COLOR_BGR2HSV)
         b, g, r = cv2.split(proc_img)
 
-        # Smoke characteristic: Low Saturation (< 38), Medium to High Brightness (110 to 235)
-        # Low RGB channel variance (|R-G| < 14, |G-B| < 14)
         s_channel = hsv[:, :, 1]
         v_channel = hsv[:, :, 2]
+        if not flame_active:
+            return SmokeDetectionResult(has_smoke=False, confidence=0.0, density=0.0, bbox=None, area_pixels=0)
 
         diff_rg = cv2.absdiff(r, g)
         diff_gb = cv2.absdiff(g, b)
 
-        smoke_mask = (
-            (s_channel < 38)
-            & (v_channel > 110)
-            & (v_channel < 235)
-            & (diff_rg < 14)
-            & (diff_gb < 14)
-        ).astype(np.uint8) * 255
+        # 1. Dark industrial soot / combustion smoke (black & dark grey plume)
+        dark_smoke = (
+            (s_channel < 95)
+            & (v_channel >= 18)
+            & (v_channel <= 135)
+            & (diff_rg < 35)
+            & (diff_gb < 35)
+        )
 
-        # Morphological filter to eliminate noise
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
-        smoke_mask = cv2.morphologyEx(smoke_mask, cv2.MORPH_OPEN, kernel)
+        # 2. White/grey haze plume
+        light_smoke = (
+            (s_channel < 45)
+            & (v_channel > 135)
+            & (v_channel < 240)
+            & (diff_rg < 22)
+            & (diff_gb < 22)
+        )
 
-        contours, _ = cv2.findContours(smoke_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        smoke_raw = ((dark_smoke | light_smoke).astype(np.uint8)) * 255
+
+        # Anchor smoke detection to the plume column rising from the active fire
+        if flame_bbox:
+            fx, fy, fw, fh = flame_bbox
+            px1 = max(0, int((fx - 0.16) * proc_w))
+            px2 = min(proc_w, int((fx + fw + 0.16) * proc_w))
+            py2 = min(proc_h, int((fy + fh * 0.45) * proc_h))
+            py1 = max(0, int(0.02 * proc_h))
+            mask_focus = np.zeros_like(smoke_raw)
+            mask_focus[py1:py2, px1:px2] = 255
+            smoke_raw = cv2.bitwise_and(smoke_raw, mask_focus)
+
+        kernel_smoke = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
+        smoke_clean = cv2.morphologyEx(smoke_raw, cv2.MORPH_CLOSE, kernel_smoke)
+        smoke_clean = cv2.morphologyEx(smoke_clean, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7)))
+
+        contours, _ = cv2.findContours(smoke_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        scaled_min = (
+            max(int(self.min_smoke_pixels * (scale * scale)), int(proc_w * proc_h * 0.005))
+            if flame_active
+            else max(int(self.min_smoke_pixels * (scale * scale) * 2), int(proc_w * proc_h * 0.04))
+        )
 
         best_area = 0
         best_bbox = None
-        scaled_min = max(int(self.min_smoke_pixels * (scale * scale)), int(proc_w * proc_h * 0.002))
-
-        proc_gray = cv2.cvtColor(proc_img, cv2.COLOR_BGR2GRAY)
 
         for c in contours:
             area = cv2.contourArea(c)
-            if area >= scaled_min:
+            if area >= scaled_min and area > best_area:
                 bx, by, bw, bh = cv2.boundingRect(c)
-                # A smoke plume rises or floats: centroid cannot be stuck purely at ground level unless fire is active
                 centroid_y = by + bh / 2
-                if not flame_active and centroid_y > proc_h * 0.78:
+                if not flame_active and centroid_y > proc_h * 0.60:
                     continue
+                best_area = area
+                if scale != 1.0:
+                    bx_orig = int(bx / scale)
+                    by_orig = int(by / scale)
+                    bw_orig = int(bw / scale)
+                    bh_orig = int(bh / scale)
+                else:
+                    bx_orig, by_orig, bw_orig, bh_orig = bx, by, bw, bh
 
-                # Texture analysis: Smoke is amorphous with very low edge variance (Laplacian < 45)
-                crop_gray = proc_gray[by:by+bh, bx:bx+bw]
-                if crop_gray.size > 0:
-                    laplacian_var = float(cv2.Laplacian(crop_gray, cv2.CV_64F).var())
-                    if laplacian_var < 45.0 and area > best_area:
-                        best_area = area
-                        if scale != 1.0:
-                            bx, by, bw, bh = int(bx / scale), int(by / scale), int(bw / scale), int(bh / scale)
-                        best_bbox = (
-                            round(max(0.0, bx / w), 4),
-                            round(max(0.0, by / h), 4),
-                            round(min(1.0, bw / w), 4),
-                            round(min(1.0, bh / h), 4),
-                        )
+                best_bbox = (
+                    round(max(0.0, bx_orig / w), 4),
+                    round(max(0.0, by_orig / h), 4),
+                    round(min(1.0, bw_orig / w), 4),
+                    round(min(1.0, bh_orig / h), 4),
+                )
 
         if best_bbox and best_area >= scaled_min:
-            density = min(98.5, max(35.0, (best_area / (w * h * 0.12 * scale * scale)) * 100))
-            conf = min(0.95, max(0.68, 0.70 + (density / 100.0) * 0.24))
+            density = min(98.5, max(38.0, (best_area / (proc_w * proc_h * 0.14)) * 100))
+            conf = min(0.96, max(0.72, 0.74 + (density / 100.0) * 0.22))
             return SmokeDetectionResult(
                 has_smoke=True,
                 confidence=round(conf, 3),

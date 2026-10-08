@@ -14,14 +14,12 @@ import {
   CheckCircle2,
   AlertTriangle,
   Play,
-  Pause,
   Sliders,
   Check,
   X,
   Flame,
   Volume2,
   VolumeX,
-  Bell,
 } from 'lucide-react';
 import {
   CameraErrorInfo,
@@ -541,6 +539,49 @@ function createSampleDetection(presetType: string, cameraId: string): VisionFram
     };
   }
 
+  if (presetType === 'FIRE_SMOKE_HAZARD') {
+    return {
+      timestamp: nowIso,
+      cameraId: cameraId || 'CAM-03',
+      source: 'image',
+      inferenceTimeMs: 14,
+      detections: [
+        {
+          detectionId: 'det-fire-1',
+          className: 'fire',
+          confidence: 0.95,
+          boundingBox: { x: 0.38, y: 0.36, width: 0.24, height: 0.44 },
+          timestamp: nowIso,
+        },
+        {
+          detectionId: 'det-smoke-1',
+          className: 'smoke',
+          confidence: 0.96,
+          boundingBox: { x: 0.21, y: 0.02, width: 0.56, height: 0.55 },
+          timestamp: nowIso,
+        },
+      ],
+      fireSmoke: {
+        hasFire: true,
+        fireConfidence: 0.95,
+        fireBbox: { x: 0.38, y: 0.36, width: 0.24, height: 0.44 },
+        hasSmoke: true,
+        smokeConfidence: 0.96,
+        smokeDensity: 98.5,
+        smokeBbox: { x: 0.21, y: 0.02, width: 0.56, height: 0.55 },
+      },
+      persons: [],
+      skeletons: [],
+      ppeSummary: {
+        person: false,
+        helmet: false,
+        vest: false,
+        gloves: false,
+        shoes: false,
+      },
+    };
+  }
+
   // Camera zone snapshots detection
   return {
     timestamp: nowIso,
@@ -961,11 +1002,12 @@ export default function Cameras() {
     }
   };
 
-  const loadPresetImage = async (presetName: string, path: string) => {
+  const loadPresetImage = async (presetName: string, path: string, autoRun = true) => {
     setCurrentPreset(presetName);
     setImageUrl(path);
     setMode('IMAGE');
     setResult(null);
+    setInferenceState('ANALYZING');
 
     try {
       const res = await fetch(path);
@@ -974,9 +1016,41 @@ export default function Cameras() {
         type: 'image/jpeg',
       });
       setImageFile(file);
+
+      if (autoRun) {
+        if (backendReady) {
+          try {
+            const response = await sendFrameForInference(
+              file,
+              activeCamera.cameraId,
+              'image'
+            );
+            handleInferenceResult(response);
+            return;
+          } catch (err) {
+            console.warn('Backend inference fallback:', err);
+          }
+        }
+        setTimeout(() => {
+          const synthetic = createSampleDetection(presetName, activeCamera.cameraId);
+          handleInferenceResult(synthetic);
+        }, 300);
+      }
     } catch {
-      // file object optional
+      // fallback
+      setTimeout(() => {
+        const synthetic = createSampleDetection(presetName, activeCamera.cameraId);
+        handleInferenceResult(synthetic);
+      }, 300);
     }
+  };
+
+  const loadPresetVideo = (presetName: string, path: string) => {
+    setCurrentPreset(presetName);
+    setVideoUrl(path);
+    setMode('RECORDED_VIDEO');
+    setDetectionActive(true);
+    setInferenceState('ANALYZING');
   };
 
   const runDetectionOnImage = async () => {
@@ -1188,6 +1262,26 @@ export default function Cameras() {
             {/* Quick Sample Selector Pill Bar */}
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[11px] font-mono uppercase text-slate-400">Quick Samples:</span>
+
+              {/* Fire & Smoke Hazard Test Image */}
+              <button
+                onClick={() =>
+                  loadPresetImage(
+                    'FIRE_SMOKE_HAZARD',
+                    '/images/fire_smoke_hazard.jpg'
+                  )
+                }
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                  currentPreset === 'FIRE_SMOKE_HAZARD' && mode === 'IMAGE'
+                    ? 'border-red-500 bg-red-950/80 text-red-200 ring-2 ring-red-500/50 shadow-lg shadow-red-900/30'
+                    : 'border-red-900/60 bg-red-950/40 text-red-300 hover:border-red-600 hover:bg-red-900/60'
+                }`}
+                title="Company Fire Flames & Thick Black Smoke Plumes Hazard Image"
+              >
+                <Flame size={13} className="text-red-400 animate-pulse" />
+                <span>🔥 Fire &amp; Smoke Hazard</span>
+              </button>
+
               <button
                 onClick={() =>
                   loadPresetImage(
@@ -1236,7 +1330,7 @@ export default function Cameras() {
                 }`}
               >
                 <CameraIcon size={13} className="text-cyan-400" />
-                <span>Zone CCTV Snapshot</span>
+                <span>Current Zone ({activeCamera.cameraId})</span>
               </button>
             </div>
           </div>
@@ -1694,13 +1788,49 @@ export default function Cameras() {
 
                   {/* Recorded Video Controls */}
                   {mode === 'RECORDED_VIDEO' && (
-                    <button
-                      onClick={() => videoInputRef.current?.click()}
-                      className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500"
-                    >
-                      <Upload size={13} />
-                      Upload Video
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() =>
+                          loadPresetVideo(
+                            'HAZARD_FIRE_SMOKE',
+                            '/videos/hazard_fire_smoke.mp4'
+                          )
+                        }
+                        className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold border transition-all ${
+                          videoUrl === '/videos/hazard_fire_smoke.mp4'
+                            ? 'border-red-500 bg-red-950/80 text-red-200 ring-2 ring-red-500/40'
+                            : 'border-red-900/60 bg-red-950/30 text-red-300 hover:border-red-600'
+                        }`}
+                      >
+                        <Flame size={13} className="text-red-400 animate-pulse" />
+                        <span>🔥 Fire &amp; Smoke CCTV Stream</span>
+                      </button>
+
+                      <button
+                        onClick={() =>
+                          loadPresetVideo(
+                            'WORKER_PATROL',
+                            '/videos/worker_ppe_patrol.mp4'
+                          )
+                        }
+                        className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold border transition-all ${
+                          videoUrl === '/videos/worker_ppe_patrol.mp4'
+                            ? 'border-blue-500 bg-blue-950/80 text-blue-200 ring-2 ring-blue-500/40'
+                            : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-600'
+                        }`}
+                      >
+                        <Video size={13} className="text-blue-400" />
+                        <span>Worker Patrol Video</span>
+                      </button>
+
+                      <button
+                        onClick={() => videoInputRef.current?.click()}
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700"
+                      >
+                        <Upload size={13} />
+                        Upload Custom Video
+                      </button>
+                    </div>
                   )}
 
                   {/* Image Controls */}

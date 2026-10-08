@@ -214,14 +214,31 @@ class UltralyticsPPEDetector:
             confidence = float(box.conf.item())
             coordinates = [float(value) for value in box.xyxy[0].tolist()]
             track_id = int(ids[index].item()) if ids is not None else None
-            detections.append(DetectionItemSchema(detectionId=f"det-{camera_id}-{frame_number}-{index}", className=class_name.lower().replace("-", "_"), confidence=confidence, boundingBox=BoundingBoxSchema(x=coordinates[0] / width, y=coordinates[1] / height, width=(coordinates[2] - coordinates[0]) / width, height=(coordinates[3] - coordinates[1]) / height), trackId=str(track_id) if track_id is not None else None, timestamp=timestamp, source=source))
-            if class_name == "Person" and track_id is not None:
-                persons[track_id] = coordinates
+            effective_id = track_id if track_id is not None else (index + 1)
+            detections.append(
+                DetectionItemSchema(
+                    detectionId=f"det-{camera_id}-{frame_number}-{index}",
+                    className=class_name.lower().replace("-", "_"),
+                    confidence=confidence,
+                    boundingBox=BoundingBoxSchema(
+                        x=coordinates[0] / width,
+                        y=coordinates[1] / height,
+                        width=(coordinates[2] - coordinates[0]) / width,
+                        height=(coordinates[3] - coordinates[1]) / height,
+                    ),
+                    trackId=str(effective_id),
+                    timestamp=timestamp,
+                    source=source,
+                )
+            )
+            if class_name == "Person":
+                persons[effective_id] = coordinates
             elif class_name in PPE_NAMES:
                 ppe_detections.append((class_name, confidence, coordinates))
 
         # Multi-spectral optical fire & smoke hazard analysis (with worker vest masking)
-        hazard_res = self.hazard_detector.detect(image, person_boxes=list(persons.values()))
+        excluded_boxes = list(persons.values()) + [coords for (pname, _, coords) in ppe_detections if pname in ("Vest", "Helmet")]
+        hazard_res = self.hazard_detector.detect(image, person_boxes=excluded_boxes)
 
         if hazard_res.fire.has_fire and hazard_res.fire.bbox:
             fx, fy, fw, fh = hazard_res.fire.bbox
