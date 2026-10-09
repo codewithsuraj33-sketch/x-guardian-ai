@@ -5,13 +5,14 @@
 import { useState } from 'react';
 import { useFactory } from '../context/FactoryContext';
 import FactoryMap from '../components/FactoryMap';
+import SimulationStudio from '../components/SimulationStudio';
 import ZoneDetails from '../components/ZoneDetails';
 import WorkerDetails from '../components/WorkerDetails';
 import { Worker, Zone } from '../types';
 import { Factory as FactoryIcon, Play, Pause, RefreshCw, Eye, AlertCircle } from 'lucide-react';
 
 export default function Factory() {
-  const { workers, zones, cameras, incidents } = useFactory();
+  const { workers, zones, cameras, incidents, triggerHazard, activeHazardSimulation } = useFactory();
   const [selectedZone, setSelectedZone] = useState<Zone | null>(null);
   const [selectedWorker, setSelectedWorker] = useState<Worker | null>(null);
   const [filterZone, setFilterZone] = useState<string>('ALL');
@@ -72,6 +73,11 @@ export default function Factory() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
         {/* Interactive 2D Map (2 columns on large screen) */}
         <div className="lg:col-span-2 space-y-4">
+          <SimulationStudio
+            activeHazard={activeHazardSimulation}
+            onTriggerHazard={triggerHazard}
+          />
+
           <FactoryMap
             zones={zones}
             workers={filteredWorkers}

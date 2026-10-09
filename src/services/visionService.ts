@@ -241,3 +241,79 @@ export function createInferenceController(options: InferenceControllerOptions) {
     isRunning: () => isRunning,
   };
 }
+
+/**
+ * Register a new IP / RTSP / Mobile camera feed with the backend service.
+ */
+export async function registerCameraApi(payload: {
+  id?: string;
+  name: string;
+  zoneId: string;
+  streamUrl: string;
+  fps?: number;
+}): Promise<{ status: string; cameraId: string; camera: any }> {
+  const res = await fetch(`${VISION_BACKEND_URL}/api/v1/cameras`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to register camera' }));
+    throw new Error(err.detail || 'Camera registration failed');
+  }
+  return res.json();
+}
+
+/**
+ * Test connectivity to an IP Webcam or CCTV RTSP URL.
+ */
+export async function testStreamConnectionApi(
+  streamUrl: string
+): Promise<{ success: boolean; resolution?: string; fps?: number; error?: string; message?: string }> {
+  try {
+    const res = await fetch(`${VISION_BACKEND_URL}/api/v1/stream/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ streamUrl }),
+    });
+    if (!res.ok) {
+      return { success: false, error: `Backend responded with HTTP ${res.status}` };
+    }
+    return res.json();
+  } catch (err) {
+    return {
+      success: false,
+      error: `Network error reaching backend: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+/**
+ * Delete a camera feed from the system.
+ */
+export async function deleteCameraApi(cameraId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${VISION_BACKEND_URL}/api/v1/cameras/${encodeURIComponent(cameraId)}`, {
+      method: 'DELETE',
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Fetch all registered cameras from the backend SQLite database.
+ */
+export async function fetchCamerasApi(): Promise<any[]> {
+  try {
+    const res = await fetch(`${VISION_BACKEND_URL}/api/v1/cameras`);
+    if (res.ok) {
+      return res.json();
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+

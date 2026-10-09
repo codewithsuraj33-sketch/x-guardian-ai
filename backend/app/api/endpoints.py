@@ -3,23 +3,41 @@
 # ─────────────────────────────────────────────
 
 from typing import List, Optional
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status, Query
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status, Query, Response
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.models.schemas import HealthResponse, VisionFrameResponse
 from app.services.detector import VisionDetector, get_detector
-from app.database import get_db
+from app.services.stream_manager import stream_manager
+from app.database import get_db, SessionLocal
 from app.services.db_service import (
     save_incident,
     get_incidents,
     update_incident_status,
     get_all_cameras,
+    add_or_update_camera,
+    delete_camera_db,
     get_all_workers,
     get_all_zones,
     get_analytics_summary,
 )
+from app.models.db_models import CameraDB
 
 router = APIRouter()
+
+
+class RegisterCameraPayload(BaseModel):
+    id: Optional[str] = None
+    name: str
+    zoneId: str = "ZONE-01"
+    streamUrl: str  # IP webcam e.g. http://192.168.1.5:8080/video or rtsp://...
+    fps: int = 10
+
+
+class TestStreamPayload(BaseModel):
+    streamUrl: str
 
 
 @router.get("/health", response_model=HealthResponse, tags=["Health"])
@@ -162,6 +180,16 @@ async def update_incident(
 async def list_cameras(db: Session = Depends(get_db)):
     """Retrieve all factory surveillance camera nodes from SQLite."""
     records = get_all_cameras(db)
+    # Also sync with stream_manager
+    for r in records:
+        if not stream_manager.get_camera(r.camera_id):
+            stream_manager.register_camera(
+                camera_id=r.camera_id,
+                name=r.name,
+                zone_id=r.zone_id,
+                stream_url=r.feed_url or "demo",
+                fps=r.fps or 10,
+            )
     return [
         {
             "cameraId": c.camera_id,
@@ -174,6 +202,137 @@ async def list_cameras(db: Session = Depends(get_db)):
         }
         for c in records
     ]
+
+
+@router.post("/api/v1/cameras", tags=["IP Cameras"])
+async def register_camera(payload: RegisterCameraPayload, db: Session = Depends(get_db)):
+    """Add or update an IP / RTSP / Mobile CCTV camera feed."""
+    cam_id = payload.id
+    if not cam_id:
+        existing = get_all_cameras(db)
+        cam_id = f"CAM-0{len(existing) + 1}" if len(existing) < 9 else f"CAM-{len(existing) + 1}"
+
+    # Register in active stream manager
+    mgr_cam = stream_manager.register_camera(
+        camera_id=cam_id,
+        name=payload.name,
+        zone_id=payload.zoneId,
+        stream_url=payload.streamUrl,
+        fps=payload.fps,
+    )
+
+    # Persist in SQLite database
+    stream_feed = f"/api/v1/stream/{cam_id}"
+    add_or_update_camera(
+        db=db,
+        camera_id=cam_id,
+        name=payload.name,
+        zone_id=payload.zoneId,
+        feed_url=stream_feed,
+        stream_url=mgr_cam.get("streamUrl", payload.streamUrl),
+        resolution=mgr_cam.get("resolution", "1080p"),
+        fps=payload.fps,
+    )
+
+    return {
+        "status": "registered",
+        "cameraId": cam_id,
+        "camera": {
+            "cameraId": cam_id,
+            "name": payload.name,
+            "zoneId": payload.zoneId,
+            "feedUrl": stream_feed,
+            "streamUrl": mgr_cam.get("streamUrl", payload.streamUrl),
+            "fps": payload.fps,
+            "status": "ONLINE",
+            "isCustom": True,
+        },
+    }
+
+
+@router.delete("/api/v1/cameras/{camera_id}", tags=["IP Cameras"])
+async def delete_camera_endpoint(camera_id: str, db: Session = Depends(get_db)):
+    """Remove a camera feed from system and database."""
+    mgr_deleted = stream_manager.delete_camera(camera_id)
+    db_deleted = delete_camera_db(db, camera_id)
+    return {
+        "status": "deleted" if (mgr_deleted or db_deleted) else "not_found",
+        "cameraId": camera_id,
+    }
+
+
+@router.post("/api/v1/stream/test", tags=["IP Cameras"])
+async def test_camera_stream(payload: TestStreamPayload):
+    """Probe an RTSP or IP Webcam URL to verify connection."""
+    res = stream_manager.test_stream_connection(payload.streamUrl)
+    return res
+
+
+@router.get("/api/v1/stream/{camera_id}", tags=["IP Cameras"])
+async def get_camera_stream(
+    camera_id: str,
+    detector: VisionDetector = Depends(get_detector),
+    db: Session = Depends(get_db),
+):
+    """
+    Live multipart MJPEG stream viewable directly in HTML <img> tags or canvas.
+    Feeds real RTSP, mobile IP camera, or simulated industrial CCTV with YOLOv8 PPE bounding boxes.
+    """
+    # Auto-restore custom camera from database into stream_manager if missing from memory
+    if not stream_manager.get_camera(camera_id):
+        db_cam = db.query(CameraDB).filter(CameraDB.camera_id == camera_id).first()
+        if db_cam and db_cam.stream_url:
+            stream_manager.register_camera(
+                camera_id=db_cam.camera_id,
+                name=db_cam.name,
+                zone_id=db_cam.zone_id,
+                stream_url=db_cam.stream_url,
+                fps=db_cam.fps or 15,
+            )
+
+    def incident_saver(**kwargs):
+        try:
+            with SessionLocal() as session:
+                save_incident(session, **kwargs)
+        except Exception as save_err:
+            print(f"Stream incident auto-save error: {save_err}")
+
+    return StreamingResponse(
+        stream_manager.generate_mjpeg_stream(
+            camera_id=camera_id,
+            detector=detector,
+            db_saver=incident_saver,
+        ),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@router.get("/api/v1/stream/{camera_id}/snapshot", tags=["IP Cameras"])
+async def get_camera_snapshot(camera_id: str):
+    """Retrieve latest JPEG snapshot from an IP or CCTV stream."""
+    frame_bytes = stream_manager.get_latest_frame(camera_id)
+    if not frame_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No frame available yet for camera {camera_id}.",
+        )
+    return Response(content=frame_bytes, media_type="image/jpeg")
+
+
+@router.get("/api/v1/stream/{camera_id}/telemetry", tags=["IP Cameras"])
+async def get_camera_telemetry(camera_id: str):
+    """Retrieve real-time PPE telemetry, detections, posture and worker statuses from an active IP/CCTV stream."""
+    telemetry = stream_manager.get_latest_telemetry(camera_id)
+    if not telemetry:
+        return {
+            "detections": [],
+            "persons": [],
+            "skeletons": [],
+            "incidents": [],
+            "ppeSummary": {"helmet": False, "vest": False, "gloves": False, "boots": False, "mask": False, "glass": False},
+            "fireSmoke": {"hasFire": False, "hasSmoke": False, "fireConfidence": 0.0, "smokeDensity": 0.0},
+        }
+    return telemetry
 
 
 @router.get("/api/v1/workers", tags=["Factory Database"])

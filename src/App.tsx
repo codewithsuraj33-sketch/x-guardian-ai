@@ -14,7 +14,6 @@ import Incidents from './pages/Incidents';
 import Analytics from './pages/Analytics';
 import History from './pages/History';
 import Settings from './pages/Settings';
-
 export default function App() {
   return (
     <SafetyProvider>

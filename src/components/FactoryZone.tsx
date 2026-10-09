@@ -34,20 +34,21 @@ export default function FactoryZone({
   const isWarning = zone.safetyStatus === RiskLevel.MEDIUM;
 
   const getBorderColor = () => {
-    if (isSelected) return 'border-blue-400 ring-2 ring-blue-500/30';
-    if (isFire) return 'border-rose-500 shadow-[0_0_30px_rgba(244,63,94,0.4)] animate-pulse';
-    if (isSmoke) return 'border-purple-500 shadow-[0_0_25px_rgba(168,85,247,0.35)] animate-pulse';
-    if (isCritical) return 'border-rose-500/80 shadow-[0_0_20px_rgba(244,63,94,0.25)]';
-    if (isHigh) return 'border-amber-500/70 shadow-[0_0_15px_rgba(245,158,11,0.2)]';
-    if (isWarning) return 'border-yellow-500/50';
+    const selRing = isSelected ? ' ring-2 ring-blue-400/80' : '';
+    if (isFire) return `border-rose-500 shadow-[0_0_35px_rgba(244,63,94,0.6)] animate-pulse${selRing}`;
+    if (isSmoke) return `border-purple-500 shadow-[0_0_30px_rgba(168,85,247,0.5)] animate-pulse${selRing}`;
+    if (isCritical) return `border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.4)] animate-pulse${selRing}`;
+    if (isHigh) return `border-amber-500 shadow-[0_0_20px_rgba(245,158,11,0.35)] animate-pulse${selRing}`;
+    if (isWarning) return `border-yellow-500/60${selRing}`;
+    if (isSelected) return 'border-blue-400 ring-2 ring-blue-500/50';
     return 'border-slate-700/80 hover:border-slate-500';
   };
 
   const getStatusBadge = () => {
-    if (isFire) return 'bg-rose-600 text-white font-black animate-pulse border-rose-400';
-    if (isSmoke) return 'bg-purple-600 text-white font-black animate-pulse border-purple-400';
-    if (isCritical) return 'bg-rose-500/20 text-rose-300 border-rose-500/30 animate-pulse';
-    if (isHigh) return 'bg-amber-500/20 text-amber-300 border-amber-500/30';
+    if (isFire) return 'bg-rose-600 text-white font-black animate-pulse border-rose-400 shadow-md shadow-rose-600/50';
+    if (isSmoke) return 'bg-purple-600 text-white font-black animate-pulse border-purple-400 shadow-md shadow-purple-600/50';
+    if (isCritical) return 'bg-rose-500/30 text-rose-200 border-rose-500/60 animate-pulse font-bold';
+    if (isHigh) return 'bg-amber-500/30 text-amber-200 border-amber-500/60 animate-pulse font-bold';
     if (isWarning) return 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30';
     return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30';
   };

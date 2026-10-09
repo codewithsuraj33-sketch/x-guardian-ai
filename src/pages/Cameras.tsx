@@ -1,4 +1,4 @@
-import { ChangeEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Camera as CameraIcon,
@@ -20,10 +20,22 @@ import {
   Flame,
   Volume2,
   VolumeX,
+  Plus,
+  Trash2,
+  Smartphone,
+  Radio,
+  HardHat,
+  Shirt,
+  Glasses,
+  Footprints,
+  Hand,
+  ShieldAlert,
 } from 'lucide-react';
 import {
+  Camera,
   CameraErrorInfo,
   CameraFacingMode,
+  CameraStatus,
   CameraStreamState,
   Detection,
   IncidentStatus,
@@ -35,8 +47,11 @@ import {
 import {
   checkBackendHealth,
   createInferenceController,
+  deleteCameraApi,
+  fetchCamerasApi,
   resetInferenceSession,
   sendFrameForInference,
+  VISION_BACKEND_URL,
 } from '../services/visionService';
 import {
   isCameraSupported,
@@ -47,9 +62,10 @@ import { COCO_SKELETON_BONES } from '../services/aiVisionEngine';
 import { useSafety } from '../context/SafetyContext';
 import { useFactory } from '../context/FactoryContext';
 import CCTVMatrix from '../components/CCTVMatrix';
+import AddCameraModal from '../components/AddCameraModal';
 import { audioAlert } from '../utils/audioAlert';
 
-type InputMode = 'LIVE_CAMERA' | 'RECORDED_VIDEO' | 'IMAGE';
+type InputMode = 'LIVE_CAMERA' | 'IP_CAMERA' | 'RECORDED_VIDEO' | 'IMAGE';
 type InferenceState = 'IDLE' | 'ANALYZING' | 'READY' | 'STOPPED' | 'ERROR';
 
 function displayLabel(detection: Detection): string {
@@ -642,7 +658,7 @@ function createSampleDetection(presetType: string, cameraId: string): VisionFram
 
 export default function Cameras() {
   const { settings, updateSettings, addIncident, setCameraOperationalStatus } = useSafety();
-  const { cameras, zones, dispatch: factoryDispatch } = useFactory();
+  const { cameras, zones, dispatch: factoryDispatch, triggerHazard } = useFactory();
 
   // Navigation tab: 'GRID' for all 5 cameras CCTV matrix, or 'CAM-01'..'CAM-05'
   const [selectedCameraId, setSelectedCameraId] = useState<string>('GRID');
@@ -665,6 +681,42 @@ export default function Cameras() {
   const [showItemBoxes, setShowItemBoxes] = useState(true);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [currentPreset, setCurrentPreset] = useState<string>('WORKER_PPE_COMPLIANT');
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+
+  // Sync cameras from SQLite DB on mount
+  useEffect(() => {
+    fetchCamerasApi().then((dbCams) => {
+      if (dbCams && dbCams.length > 0) {
+        factoryDispatch({
+          type: 'SET_CAMERAS',
+          cameras: dbCams.map((c: any) => ({
+            cameraId: c.cameraId,
+            zoneId: c.zoneId,
+            name: c.name,
+            feedUrl: c.feedUrl,
+            resolution: c.resolution || '1920x1080',
+            fps: c.fps || 10,
+            status: c.status === 'ONLINE' ? CameraStatus.ONLINE : CameraStatus.OFFLINE,
+            isCustom: c.feedUrl?.includes('/api/v1/stream') || c.cameraId > 'CAM-05',
+          })),
+        });
+      }
+    });
+  }, [factoryDispatch]);
+
+  const handleCameraAdded = (newCam: Camera) => {
+    factoryDispatch({ type: 'ADD_CAMERA', camera: newCam });
+    setSelectedCameraId(newCam.cameraId);
+    setMode('IP_CAMERA');
+  };
+
+  const handleDeleteCamera = async (camId: string) => {
+    if (window.confirm(`Are you sure you want to remove ${camId}?`)) {
+      await deleteCameraApi(camId);
+      factoryDispatch({ type: 'REMOVE_CAMERA', cameraId: camId });
+      setSelectedCameraId('GRID');
+    }
+  };
 
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -685,6 +737,52 @@ export default function Cameras() {
     ...(settings.maskRequired ? ['Mask'] : []),
     ...(settings.gogglesRequired ? ['Glass'] : []),
   ];
+
+  // Audit breakdown of currently detected worn gear vs missing required gear
+  const ppeAudit = useMemo(() => {
+    const definitions = [
+      { key: 'Helmet', label: 'Safety Helmet / Hard Hat', required: settings.helmetRequired, icon: HardHat },
+      { key: 'Vest', label: 'High-Vis Reflective Vest', required: settings.vestRequired, icon: Shirt },
+      { key: 'Glass', label: 'Safety Goggles / Eye Shield', required: settings.gogglesRequired, icon: Glasses },
+      { key: 'Boots', label: 'Steel-Toe Safety Boots', required: settings.shoesRequired, icon: Footprints },
+      { key: 'Glove', label: 'Industrial Work Gloves', required: settings.glovesRequired, icon: Hand },
+      { key: 'Mask', label: 'Protective Face Mask', required: settings.maskRequired, icon: ShieldAlert },
+    ];
+
+    const hasWorker =
+      (result?.persons && result.persons.length > 0) ||
+      result?.detections?.some((d) => d.className.toLowerCase() === 'person');
+
+    const worn: { key: string; label: string; confidence: number; icon: typeof HardHat }[] = [];
+    const missing: { key: string; label: string; icon: typeof HardHat }[] = [];
+
+    definitions.forEach((def) => {
+      const match = result?.detections?.find((d) => {
+        const c = d.className.toLowerCase();
+        if (def.key === 'Glass') return c.includes('glass') || c.includes('goggle');
+        if (def.key === 'Boots') return c.includes('boot') || c.includes('shoe');
+        if (def.key === 'Glove') return c.includes('glove');
+        return c.includes(def.key.toLowerCase());
+      });
+
+      if (match) {
+        worn.push({
+          key: def.key,
+          label: def.label,
+          confidence: Math.round(match.confidence * 100),
+          icon: def.icon,
+        });
+      } else if (def.required && hasWorker) {
+        missing.push({
+          key: def.key,
+          label: def.label,
+          icon: def.icon,
+        });
+      }
+    });
+
+    return { worn, missing, hasWorker };
+  }, [result, settings]);
 
   // Currently focused camera object
   const activeCamera =
@@ -776,11 +874,22 @@ export default function Cameras() {
       setInferenceState('READY');
       setInferenceError(null);
 
+      const targetCamId = nextResult.cameraId || selectedCameraId;
+      const activeCam = cameras.find((c) => c.cameraId === targetCamId);
+      const camZoneId =
+        activeCam?.zoneId || (targetCamId === 'CAM-03' ? 'ZONE-03' : 'ZONE-01');
+
       // 1. Audio Siren for Fire & Smoke Emergency
       const hasActiveFire = Boolean(nextResult.fireSmoke?.hasFire);
       const hasCriticalSmoke = Boolean(
         nextResult.fireSmoke?.hasSmoke && (nextResult.fireSmoke?.smokeDensity ?? 0) > 30
       );
+
+      if (hasActiveFire) {
+        triggerHazard('FIRE', camZoneId);
+      } else if (hasCriticalSmoke) {
+        triggerHazard('SMOKE', camZoneId);
+      }
 
       if (settings.audioAlert && (hasActiveFire || hasCriticalSmoke)) {
         audioAlert.playEmergencySiren();
@@ -789,17 +898,23 @@ export default function Cameras() {
       }
 
       // 2. Audio Warning Beep for Missing Required PPE or Worker Fall
-      if (settings.audioAlert && !hasActiveFire && !hasCriticalSmoke) {
-        const hasMissingPpeOrHazard = nextResult.persons?.some((person) => {
-          if (!person.visible) return false;
-          if (person.skeleton?.isFall) return true;
-          return requiredPpeList.some((gear) => {
-            const st = getPpeStateValue(person.ppeStates, gear);
-            return !isPpeStateConfirmed(st);
-          });
+      const hasMissingPpeOrHazard = nextResult.persons?.some((person) => {
+        if (!person.visible) return false;
+        if (person.skeleton?.isFall) return true;
+        return requiredPpeList.some((gear) => {
+          const st = getPpeStateValue(person.ppeStates, gear);
+          return !isPpeStateConfirmed(st);
+        });
+      });
+
+      if (hasMissingPpeOrHazard) {
+        factoryDispatch({
+          type: 'UPDATE_ZONE',
+          zoneId: camZoneId,
+          updates: { safetyStatus: RiskLevel.HIGH },
         });
 
-        if (hasMissingPpeOrHazard) {
+        if (settings.audioAlert && !hasActiveFire && !hasCriticalSmoke) {
           const now = Date.now();
           if (now - lastBeepTimeRef.current >= 1200) {
             lastBeepTimeRef.current = now;
@@ -814,6 +929,7 @@ export default function Cameras() {
           incident.violationType.toLowerCase().includes('collapse') ||
           incident.violationType.toLowerCase().includes('fire');
         const severity = isCritical ? RiskLevel.CRITICAL : RiskLevel.HIGH;
+        const targetZone = incident.zone || camZoneId;
         addIncident({
           incidentId: incident.incidentId,
           workerId: `TRACK-${incident.trackId}`,
@@ -821,7 +937,7 @@ export default function Cameras() {
           violation: incident.violationType,
           severity,
           cameraId: incident.cameraId,
-          zoneId: incident.zone,
+          zoneId: targetZone,
           confidence: incident.confidence,
           frameNumber: incident.frameNumber,
           evidenceImage: incident.evidenceImage,
@@ -834,7 +950,7 @@ export default function Cameras() {
               workerId: `TRACK-${incident.trackId}`,
               trackId: incident.trackId,
               cameraId: incident.cameraId,
-              zoneId: incident.zone || 'ZONE-01',
+              zoneId: targetZone,
               violation: incident.violationType,
               severity,
               timestamp: incident.timestamp,
@@ -847,7 +963,7 @@ export default function Cameras() {
         });
       });
     },
-    [addIncident, factoryDispatch, settings.audioAlert, requiredPpeList]
+    [addIncident, factoryDispatch, triggerHazard, settings.audioAlert, requiredPpeList, cameras, selectedCameraId]
   );
 
   // Poll backend health
@@ -936,6 +1052,33 @@ export default function Cameras() {
     liveFps,
   ]);
 
+  // Poll real-time telemetry from active IP camera / mobile stream
+  useEffect(() => {
+    if (mode !== 'IP_CAMERA' || !backendReady || !activeCamera.cameraId) return;
+
+    let mounted = true;
+    const fetchTelemetry = async () => {
+      try {
+        const res = await fetch(`${VISION_BACKEND_URL}/api/v1/stream/${activeCamera.cameraId}/telemetry`);
+        if (res.ok && mounted) {
+          const data = await res.json();
+          if (data && (data.detections || data.persons)) {
+            handleInferenceResult(data);
+          }
+        }
+      } catch {
+        // stream may be connecting
+      }
+    };
+
+    fetchTelemetry();
+    const interval = setInterval(fetchTelemetry, 750);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [mode, backendReady, activeCamera.cameraId, handleInferenceResult]);
+
   const startCamera = useCallback(async () => {
     setCameraError(null);
     setStreamState(CameraStreamState.REQUESTING_PERMISSION);
@@ -994,10 +1137,14 @@ export default function Cameras() {
     setSelectedCameraId(camId);
     if (camId !== 'GRID') {
       const targetCam = cameras.find((c) => c.cameraId === camId);
-      const feed = targetCam?.feedUrl || '/images/cam01_entry.jpg';
-      setImageUrl(feed);
-      setMode('IMAGE');
-      setCurrentPreset(`ZONE_${camId}`);
+      if (targetCam?.isCustom || targetCam?.feedUrl?.startsWith('/api/v1/stream') || targetCam?.streamUrl) {
+        setMode('IP_CAMERA');
+      } else {
+        const feed = targetCam?.feedUrl || '/images/cam01_entry.jpg';
+        setImageUrl(feed);
+        setMode('IMAGE');
+        setCurrentPreset(`ZONE_${camId}`);
+      }
       setResult(null);
     }
   };
@@ -1150,12 +1297,12 @@ export default function Cameras() {
             }`}
           >
             <LayoutGrid size={16} />
-            <span>5-Channel CCTV Video Wall</span>
+            <span>{cameras.length}-Channel CCTV Video Wall</span>
           </button>
         </div>
       </header>
 
-      {/* Camera Selection Bar across all 5 cameras */}
+      {/* Camera Selection Bar across all cameras */}
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-3">
         <span className="text-xs font-mono font-bold uppercase tracking-wider text-slate-400 mr-2">
           CAMERAS:
@@ -1174,21 +1321,36 @@ export default function Cameras() {
                   : 'border-slate-800 bg-slate-900/80 text-slate-300 hover:border-slate-700 hover:text-white'
               }`}
             >
-              <CameraIcon size={14} className={isSelected ? 'text-white' : 'text-blue-400'} />
+              {c.isCustom ? (
+                <Smartphone size={14} className={isSelected ? 'text-white' : 'text-cyan-400'} />
+              ) : (
+                <CameraIcon size={14} className={isSelected ? 'text-white' : 'text-blue-400'} />
+              )}
               <span>{c.cameraId}</span>
               <span className="text-[11px] opacity-75 font-normal">({zone?.name || 'Sector'})</span>
             </button>
           );
         })}
+
+        <button
+          type="button"
+          onClick={() => setIsAddModalOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold border border-blue-500/60 bg-blue-600/20 text-blue-300 hover:bg-blue-600 hover:text-white transition-all shadow-sm ml-auto"
+        >
+          <Plus size={14} />
+          <span>Add IP / Mobile Cam</span>
+        </button>
       </div>
 
-      {/* VIEW 1: All 5 Cameras CCTV Surveillance Video Wall */}
+      {/* VIEW 1: All Cameras CCTV Surveillance Video Wall */}
       {selectedCameraId === 'GRID' && (
         <div className="space-y-6">
           <CCTVMatrix
             cameras={cameras}
             zones={zones}
             onSelectCamera={(camId) => selectCameraTab(camId)}
+            onAddCameraClick={() => setIsAddModalOpen(true)}
+            onDeleteCamera={handleDeleteCamera}
           />
 
           {/* Quick Action Banner */}
@@ -1251,6 +1413,17 @@ export default function Cameras() {
                   <span className="rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-mono px-2 py-0.5 font-bold">
                     ONLINE
                   </span>
+                  {activeCamera.isCustom && (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteCamera(activeCamera.cameraId)}
+                      className="inline-flex items-center gap-1 rounded bg-rose-950/70 border border-rose-700 text-rose-300 hover:bg-rose-900 px-2 py-0.5 text-[10px] font-mono transition-colors"
+                      title="Remove this camera"
+                    >
+                      <Trash2 size={10} />
+                      <span>Remove</span>
+                    </button>
+                  )}
                 </div>
                 <p className="text-xs text-slate-400 mt-0.5">
                   Sector: <strong className="text-slate-200">{activeZone?.name}</strong> •{' '}
@@ -1341,6 +1514,7 @@ export default function Cameras() {
               {(
                 [
                   ['LIVE_CAMERA', 'Live Hardware Webcam', CameraIcon],
+                  ['IP_CAMERA', 'Live IP / Mobile Stream', Smartphone],
                   ['IMAGE', 'Camera Snapshot & PPE Images', ImageIcon],
                   ['RECORDED_VIDEO', 'Recorded Video Stream', Video],
                 ] as const
@@ -1695,6 +1869,52 @@ export default function Cameras() {
                   </div>
                 )}
 
+                {/* 4. Live IP Camera / Mobile / RTSP Stream Viewport */}
+                {mode === 'IP_CAMERA' && (
+                  <div className="relative h-full w-full bg-slate-950 flex items-center justify-center overflow-hidden">
+                    <img
+                      src={
+                        activeCamera.feedUrl?.startsWith('http')
+                          ? activeCamera.feedUrl
+                          : `${VISION_BACKEND_URL}${activeCamera.feedUrl || `/api/v1/stream/${activeCamera.cameraId}`}`
+                      }
+                      alt={`${activeCamera.name || activeCamera.cameraId} Stream`}
+                      className="h-full w-full object-contain"
+                      onError={(e) => {
+                        // Keep visible for fallback
+                      }}
+                    />
+
+                    {/* Scanlines Effect */}
+                    <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%)] bg-[length:100%_4px] opacity-35" />
+
+                    {/* Live Stream OSD Top Banner */}
+                    <div className="absolute top-3 left-3 z-20 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-950/85 backdrop-blur-md border border-slate-700 text-xs font-mono text-emerald-400">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                      <span>LIVE RTSP / MOBILE FEED ACTIVE • YOLOv8 AI OPTICAL DETECTION</span>
+                    </div>
+
+                    {/* Bottom Metadata */}
+                    <div className="absolute bottom-3 left-3 right-3 z-20 flex items-center justify-between text-xs font-mono">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-1 rounded bg-slate-900/90 border border-slate-700 text-cyan-300 font-bold">
+                          {activeCamera.cameraId}: {activeCamera.name}
+                        </span>
+                        {activeCamera.streamUrl && (
+                          <span className="px-2 py-1 rounded bg-slate-900/80 border border-slate-800 text-slate-300 truncate max-w-xs">
+                            {activeCamera.streamUrl}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="px-2.5 py-1 rounded bg-slate-900/90 border border-slate-700 text-emerald-400 flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <span>MJPEG 1080p STREAM</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Empty State */}
                 {((mode === 'RECORDED_VIDEO' && !videoUrl) || (mode === 'IMAGE' && !imageUrl)) && (
                   <div className="p-8 text-center text-sm text-slate-500">
@@ -1879,57 +2099,115 @@ export default function Cameras() {
                 <p className="mt-0.5 text-xs leading-5 text-slate-400">{backendReason}</p>
               </div>
 
-              {/* Active Required PPE Checklist Status */}
-              <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-2">
+              {/* Overall Compliance Status Badge */}
+              <div
+                className={`rounded-lg border p-3 flex items-center justify-between transition-all ${
+                  !ppeAudit.hasWorker
+                    ? 'border-slate-800 bg-slate-950/60 text-slate-400'
+                    : ppeAudit.missing.length === 0
+                    ? 'border-emerald-500/50 bg-emerald-950/30 text-emerald-300'
+                    : 'border-rose-500/50 bg-rose-950/40 text-rose-300 shadow-md shadow-rose-950/30'
+                }`}
+              >
+                <div>
+                  <span className="text-[10px] font-mono tracking-wider uppercase block text-slate-400">
+                    Live Safety Compliance
+                  </span>
+                  <p className="text-xs font-bold mt-0.5">
+                    {!ppeAudit.hasWorker
+                      ? 'Standby • Waiting for Personnel'
+                      : ppeAudit.missing.length === 0
+                      ? '✓ Fully Compliant • All Gear Worn'
+                      : `🚨 Non-Compliant • ${ppeAudit.missing.length} Gear Missing`}
+                  </p>
+                </div>
+                <div className="font-mono text-xs font-bold px-2 py-1 rounded bg-black/40 border border-slate-700">
+                  {ppeAudit.worn.length} / {requiredPpeList.length} OK
+                </div>
+              </div>
+
+              {/* 1. DETECTED / WORN SAFETY EQUIPMENT */}
+              <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/15 p-3 space-y-2">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold text-white">Required Gear Audit</span>
-                  <span className="font-mono text-emerald-400 text-[10px] flex items-center gap-1">
-                    <CheckCircle2 size={11} />
-                    {requiredPpeList.length} ITEMS MANDATORY
+                  <span className="font-semibold text-emerald-300 flex items-center gap-1.5">
+                    <ShieldCheck size={14} className="text-emerald-400" />
+                    Detected / Worn Gear
+                  </span>
+                  <span className="font-mono text-emerald-400 text-[10px] font-bold">
+                    {ppeAudit.worn.length} ITEMS DETECTED
                   </span>
                 </div>
 
                 <div className="space-y-1.5 pt-1">
-                  {[
-                    { key: 'Helmet', label: 'Safety Helmet / Hard Hat', required: settings.helmetRequired },
-                    { key: 'Vest', label: 'High-Visibility Reflective Vest', required: settings.vestRequired },
-                    { key: 'Glove', label: 'Industrial Work Gloves', required: settings.glovesRequired },
-                    { key: 'Boots', label: 'Steel-Toe Safety Boots', required: settings.shoesRequired },
-                    { key: 'Mask', label: 'Protective Face Mask', required: settings.maskRequired },
-                    { key: 'Glass', label: 'Safety Goggles / Eye Shield', required: settings.gogglesRequired },
-                  ].map((item) => {
-                    const detectedInFrame = result?.detections?.some((d) => {
-                      const c = d.className.toLowerCase();
-                      if (item.key === 'Glass') return c.includes('glass') || c.includes('goggle');
-                      if (item.key === 'Boots') return c.includes('boot') || c.includes('shoe');
-                      if (item.key === 'Glove') return c.includes('glove');
-                      return c.includes(item.key.toLowerCase());
-                    });
-
-                    return (
-                      <div
-                        key={item.key}
-                        className="flex items-center justify-between text-xs bg-slate-900 px-2.5 py-1.5 rounded border border-slate-800/80"
-                      >
-                        <span className="text-slate-300">{item.label}</span>
-                        <div className="flex items-center gap-1.5 font-mono text-[10px]">
-                          {detectedInFrame ? (
-                            <span className="text-emerald-400 font-bold flex items-center gap-1">
-                              <Check size={11} />
-                              DETECTED
-                            </span>
-                          ) : item.required ? (
-                            <span className="text-rose-400 font-bold flex items-center gap-1">
-                              <X size={11} />
-                              MISSING
-                            </span>
-                          ) : (
-                            <span className="text-slate-500">OPTIONAL</span>
-                          )}
+                  {ppeAudit.worn.length === 0 ? (
+                    <p className="text-xs text-slate-500 italic py-1 text-center">
+                      No PPE detected on worker in current frame
+                    </p>
+                  ) : (
+                    ppeAudit.worn.map((item) => {
+                      const Icon = item.icon;
+                      return (
+                        <div
+                          key={`worn-${item.key}`}
+                          className="flex items-center justify-between text-xs bg-slate-950/80 px-2.5 py-1.5 rounded border border-emerald-500/30 shadow-sm"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Icon size={14} className="text-emerald-400 flex-shrink-0" />
+                            <span className="text-slate-200 font-medium">{item.label}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 font-mono text-[10px] text-emerald-400 font-bold">
+                            <Check size={12} className="text-emerald-400" />
+                            <span>WORN ({item.confidence}%)</span>
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* 2. MISSING SAFETY EQUIPMENT (VIOLATIONS) */}
+              <div className="rounded-lg border border-rose-500/30 bg-rose-950/15 p-3 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-rose-300 flex items-center gap-1.5">
+                    <AlertTriangle size={14} className="text-rose-400" />
+                    Missing Gear (Violations)
+                  </span>
+                  <span className="font-mono text-rose-400 text-[10px] font-bold">
+                    {ppeAudit.missing.length} ITEMS MISSING
+                  </span>
+                </div>
+
+                <div className="space-y-1.5 pt-1">
+                  {!ppeAudit.hasWorker ? (
+                    <p className="text-xs text-slate-500 italic py-1 text-center">
+                      Personnel monitoring standby
+                    </p>
+                  ) : ppeAudit.missing.length === 0 ? (
+                    <div className="flex items-center justify-center gap-1.5 py-2 text-xs text-emerald-400 font-medium">
+                      <CheckCircle2 size={13} />
+                      <span>Zero violations detected. 100% compliant.</span>
+                    </div>
+                  ) : (
+                    ppeAudit.missing.map((item) => {
+                      const Icon = item.icon;
+                      return (
+                        <div
+                          key={`missing-${item.key}`}
+                          className="flex items-center justify-between text-xs bg-slate-950/80 px-2.5 py-1.5 rounded border border-rose-500/40 shadow-sm animate-pulse"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Icon size={14} className="text-rose-400 flex-shrink-0" />
+                            <span className="text-rose-200 font-semibold">{item.label}</span>
+                          </div>
+                          <div className="flex items-center gap-1 font-mono text-[10px] text-rose-400 font-bold">
+                            <X size={12} className="text-rose-400" />
+                            <span>NOT DETECTED</span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
 
@@ -2067,6 +2345,15 @@ export default function Cameras() {
         accept="image/jpeg,image/png,image/webp"
         onChange={(event) => handleFile(event, 'image')}
         className="hidden"
+      />
+
+      {/* Add Camera / Mobile Feed Modal */}
+      <AddCameraModal
+        isOpen={isAddModalOpen}
+        onClose={() => setIsAddModalOpen(false)}
+        zones={zones}
+        existingCameras={cameras}
+        onCameraAdded={handleCameraAdded}
       />
     </div>
   );

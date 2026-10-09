@@ -54,6 +54,9 @@ export default function EmergencyAlertModal({
     setAcknowledged(true);
     audioAlert.stopSiren();
     onAcknowledge(alert.alertId);
+    setTimeout(() => {
+      onClose();
+    }, 400);
   };
 
   const isFire = alert.hazardType === 'FIRE';

@@ -30,15 +30,45 @@ from .pose_detector import SkeletonPoseTracker
 
 REQUIRED_PPE = ("Helmet", "Vest", "Boots", "Glove", "Mask", "Glass")
 PPE_NAMES = set(REQUIRED_PPE)
-DETECTION_THRESHOLD = 0.45
-VEST_CONFIDENCE_THRESHOLD = float(os.getenv("XGUARDIAN_VEST_CONFIDENCE_THRESHOLD", "0.60"))
-KEEP_CONFIRMED_THRESHOLD = 0.40
-TEMPORAL_WINDOW = 4
-PERSISTENCE_RATIO = 0.50
-VIOLATION_CONFIRMATION_FRAMES = int(os.getenv("XGUARDIAN_CONFIRMATION_FRAMES", "3"))
-RECOVERY_FRAMES = 4
-MIN_VISIBLE_FRACTION = 0.45
+DETECTION_THRESHOLD = 0.28
+VEST_CONFIDENCE_THRESHOLD = float(os.getenv("XGUARDIAN_VEST_CONFIDENCE_THRESHOLD", "0.52"))
+GLASS_DETECTION_THRESHOLD = float(os.getenv("XGUARDIAN_GLASS_CONFIDENCE_THRESHOLD", "0.16"))
+KEEP_CONFIRMED_THRESHOLD = 0.16
+TEMPORAL_WINDOW = 3
+PERSISTENCE_RATIO = 0.35
+VIOLATION_CONFIRMATION_FRAMES = int(os.getenv("XGUARDIAN_CONFIRMATION_FRAMES", "2"))
+RECOVERY_FRAMES = 3
+MIN_VISIBLE_FRACTION = 0.40
 MIN_PERSON_AREA_FRACTION = 0.0005
+
+
+def is_valid_safety_vest(crop_bgr: np.ndarray | None, confidence: float) -> bool:
+    """
+    Validates whether a detected 'Vest' region is a genuine industrial high-vis safety vest
+    or just a regular casual t-shirt / shirt.
+    - If model confidence is high (>= 0.70), accept.
+    - Otherwise, inspect color in HSV space for fluorescent yellow/lime or safety orange.
+    - Plain casual t-shirts (black, grey, blue, maroon, white) without high-vis color are rejected.
+    """
+    if confidence >= 0.70:
+        return True
+    if crop_bgr is None or crop_bgr.size == 0 or crop_bgr.shape[0] < 10 or crop_bgr.shape[1] < 10:
+        return False
+
+    try:
+        hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+        # Fluorescent high-vis neon yellow / lime green
+        mask_yellow = cv2.inRange(hsv, np.array([20, 50, 70]), np.array([65, 255, 255]))
+        # Fluorescent high-vis safety orange / bright reddish-orange
+        mask_orange = cv2.inRange(hsv, np.array([4, 75, 75]), np.array([22, 255, 255]))
+        # High-reflectivity retroreflective stripes
+        mask_refl = cv2.inRange(hsv, np.array([0, 0, 180]), np.array([180, 40, 255]))
+
+        combined = mask_yellow | mask_orange | mask_refl
+        hivis_ratio = float(cv2.countNonZero(combined)) / float(crop_bgr.shape[0] * crop_bgr.shape[1])
+        return hivis_ratio >= 0.08 or confidence >= 0.65
+    except Exception:
+        return confidence >= 0.55
 
 
 class UnavailablePPEDetector:
@@ -79,11 +109,11 @@ def ppe_region(name: str, person: list[float]) -> tuple[float, float, float, flo
     if name == "Helmet":
         return left - width * 0.10, top - height * 0.10, right + width * 0.10, top + height * 0.35
     if name == "Glass":
-        return left - width * 0.05, top + height * 0.02, right + width * 0.05, top + height * 0.28
+        return left - width * 0.12, top - height * 0.05, right + width * 0.12, top + height * 0.38
     if name == "Mask":
         return left - width * 0.05, top + height * 0.08, right + width * 0.05, top + height * 0.35
     if name == "Vest":
-        return left + width * 0.10, top + height * 0.20, right - width * 0.10, top + height * 0.78
+        return left + width * 0.08, top + height * 0.18, right - width * 0.08, top + height * 0.80
     if name == "Glove":
         return left - width * 0.15, top + height * 0.30, right + width * 0.15, top + height * 0.85
     return left - width * 0.15, top + height * 0.68, right + width * 0.15, bottom + height * 0.10
@@ -114,7 +144,13 @@ def update_ppe_state(item: PPEState, name: str, is_associated: bool, confidence:
     item.observed_frames += 1
     if is_associated and confidence is not None:
         item.confidence = confidence
-    class_threshold = VEST_CONFIDENCE_THRESHOLD if name == "Vest" else DETECTION_THRESHOLD
+    if name == "Vest":
+        class_threshold = VEST_CONFIDENCE_THRESHOLD
+    elif name == "Glass":
+        class_threshold = GLASS_DETECTION_THRESHOLD
+    else:
+        class_threshold = DETECTION_THRESHOLD
+
     threshold = class_threshold if item.confirmed or item.state in {"VIOLATION", "COMPLIANT"} else class_threshold
     eligible = is_associated and confidence is not None and confidence >= threshold
     item.history.append(eligible)
@@ -215,6 +251,15 @@ class UltralyticsPPEDetector:
             coordinates = [float(value) for value in box.xyxy[0].tolist()]
             track_id = int(ids[index].item()) if ids is not None else None
             effective_id = track_id if track_id is not None else (index + 1)
+
+            # Validate genuine industrial safety vest vs casual t-shirt / shirt
+            if class_name == "Vest":
+                vx1, vy1, vx2, vy2 = [max(0, int(v)) for v in coordinates]
+                vx2, vy2 = min(width, vx2), min(height, vy2)
+                crop = image[vy1:vy2, vx1:vx2] if (vy2 > vy1 and vx2 > vx1) else None
+                if not is_valid_safety_vest(crop, confidence):
+                    continue  # Suppress false-positive casual clothing
+
             detections.append(
                 DetectionItemSchema(
                     detectionId=f"det-{camera_id}-{frame_number}-{index}",
@@ -309,6 +354,15 @@ class UltralyticsPPEDetector:
         person_summaries: list[PersonSafetySchema] = []
         annotated = result.plot()
 
+        cam_zone_map = {
+            "CAM-01": "ZONE-01",
+            "CAM-02": "ZONE-02",
+            "CAM-03": "ZONE-03",
+            "CAM-04": "ZONE-04",
+            "CAM-05": "ZONE-05",
+        }
+        cam_zone = cam_zone_map.get(camera_id, "ZONE-01")
+
         # Multi-spectral optical fire hazard alerts & evidence
         fire_key = (camera_id, "HAZARD", "FIRE")
         if hazard_res.fire.has_fire and hazard_res.fire.bbox:
@@ -395,7 +449,7 @@ class UltralyticsPPEDetector:
                         cv2.putText(evidence_frame, timestamp, (12, height - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                         encoded_ok, encoded = cv2.imencode(".jpg", evidence_frame)
                         evidence = f"data:image/jpeg;base64,{base64.b64encode(encoded.tobytes()).decode('ascii')}" if encoded_ok else None
-                        incidents.append(VisionIncidentSchema(incidentId=incident_id, trackId=str(track_id), violationType="Worker Fall / Collapse", requiredPpe="Emergency Assistance", timestamp=timestamp, frameNumber=frame_number, confidence=0.98, cameraId=camera_id, zone="TEST-ZONE", evidenceImage=evidence))
+                        incidents.append(VisionIncidentSchema(incidentId=incident_id, trackId=str(track_id), violationType="Worker Fall / Collapse", requiredPpe="Emergency Assistance", timestamp=timestamp, frameNumber=frame_number, confidence=0.98, cameraId=camera_id, zone=cam_zone, evidenceImage=evidence))
                         self._active_incidents.add(fall_key)
                 elif fall_key in self._active_incidents and skeleton.postureState == "STANDING":
                     self._active_incidents.remove(fall_key)
@@ -409,7 +463,8 @@ class UltralyticsPPEDetector:
                 key = (camera_id, track_id, name)
                 display_ppe = "Safety Goggles" if name == "Glass" else name
                 if state == "MISSING_CANDIDATE" and visible:
-                    if item.missing_frames >= VIOLATION_CONFIRMATION_FRAMES:
+                    req_frames = 1 if source in ("image", "upload", "photo") else VIOLATION_CONFIRMATION_FRAMES
+                    if item.missing_frames >= req_frames:
                         state = "VIOLATION"
                         item.state = state
                 if state == "VIOLATION":
@@ -426,7 +481,7 @@ class UltralyticsPPEDetector:
                         cv2.putText(evidence_frame, timestamp, (12, height - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                         encoded_ok, encoded = cv2.imencode(".jpg", evidence_frame)
                         evidence = f"data:image/jpeg;base64,{base64.b64encode(encoded.tobytes()).decode('ascii')}" if encoded_ok else None
-                        incidents.append(VisionIncidentSchema(incidentId=incident_id, trackId=str(track_id), violationType=f"Missing {display_ppe}", requiredPpe=display_ppe, timestamp=timestamp, frameNumber=frame_number, confidence=item.confidence, cameraId=camera_id, zone="TEST-ZONE", evidenceImage=evidence))
+                        incidents.append(VisionIncidentSchema(incidentId=incident_id, trackId=str(track_id), violationType=f"Missing {display_ppe}", requiredPpe=display_ppe, timestamp=timestamp, frameNumber=frame_number, confidence=item.confidence, cameraId=camera_id, zone=cam_zone, evidenceImage=evidence))
                         self._active_incidents.add(key)
                 elif key in self._active_incidents and state == "COMPLIANT":
                     self._active_incidents.remove(key)

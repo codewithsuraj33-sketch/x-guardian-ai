@@ -37,7 +37,11 @@ interface FactoryState {
 
 type FactoryAction =
   | { type: 'SET_WORKERS'; workers: Worker[] }
+  | { type: 'SET_CAMERAS'; cameras: Camera[] }
+  | { type: 'ADD_CAMERA'; camera: Camera }
+  | { type: 'REMOVE_CAMERA'; cameraId: string }
   | { type: 'ADD_INCIDENTS'; incidents: Incident[] }
+  | { type: 'UPDATE_ZONE'; zoneId: string; updates: Partial<Zone> }
   | { type: 'TICK'; workers: Worker[] }
   | {
       type: 'TRIGGER_HAZARD';
@@ -53,11 +57,77 @@ function reducer(state: FactoryState, action: FactoryAction): FactoryState {
     case 'SET_WORKERS':
       return { ...state, workers: action.workers };
 
-    case 'ADD_INCIDENTS':
+    case 'SET_CAMERAS':
+      return { ...state, cameras: action.cameras };
+
+    case 'ADD_CAMERA': {
+      const filtered = state.cameras.filter((c) => c.cameraId !== action.camera.cameraId);
+      return { ...state, cameras: [...filtered, action.camera] };
+    }
+
+    case 'REMOVE_CAMERA':
       return {
         ...state,
-        incidents: [...action.incidents, ...state.incidents].slice(0, 60),
+        cameras: state.cameras.filter((c) => c.cameraId !== action.cameraId),
       };
+
+    case 'UPDATE_ZONE':
+      return {
+        ...state,
+        zones: state.zones.map((z) =>
+          z.id === action.zoneId ? { ...z, ...action.updates } : z
+        ),
+      };
+
+    case 'ADD_INCIDENTS': {
+      const newIncidents = [...action.incidents, ...state.incidents].slice(0, 60);
+
+      // Dynamically update the corresponding zone's safetyStatus based on the incidents
+      const updatedZones = state.zones.map((z) => {
+        const matchesThisZone = action.incidents.filter(
+          (i) => i.zoneId === z.id || (!i.zoneId && z.cameraId === i.cameraId)
+        );
+        if (matchesThisZone.length === 0) return z;
+
+        const hasFire =
+          matchesThisZone.some((i) => i.violation?.toLowerCase().includes('fire')) ||
+          z.hasActiveFire;
+        const hasSmoke =
+          matchesThisZone.some((i) => i.violation?.toLowerCase().includes('smoke')) ||
+          z.hasActiveSmoke;
+        const hasCritical = matchesThisZone.some(
+          (i) =>
+            i.severity === RiskLevel.CRITICAL || i.violation?.toLowerCase().includes('fall')
+        );
+        const hasHigh = matchesThisZone.some(
+          (i) =>
+            i.severity === RiskLevel.HIGH ||
+            i.violation?.toLowerCase().includes('ppe') ||
+            i.violation?.toLowerCase().includes('vest') ||
+            i.violation?.toLowerCase().includes('helmet')
+        );
+
+        let newStatus = z.safetyStatus;
+        if (hasFire || hasSmoke || hasCritical) {
+          newStatus = RiskLevel.CRITICAL;
+        } else if (hasHigh) {
+          newStatus = RiskLevel.HIGH;
+        }
+
+        return {
+          ...z,
+          hasActiveFire: hasFire,
+          hasActiveSmoke: hasSmoke,
+          safetyStatus: newStatus,
+        };
+      });
+
+      return {
+        ...state,
+        zones: updatedZones,
+        incidents: newIncidents,
+      };
+    }
 
     case 'TICK': {
       // If an active hazard simulation is running, preserve hazard state
@@ -77,7 +147,11 @@ function reducer(state: FactoryState, action: FactoryAction): FactoryState {
         const zoneWorkers = updatedWorkers.filter((w) => w.zoneId === z.id);
         const baseStatus = assessZoneSafety(zoneWorkers, z);
         const finalStatus =
-          z.hasActiveFire || z.hasActiveSmoke ? RiskLevel.CRITICAL : baseStatus;
+          z.hasActiveFire || z.hasActiveSmoke
+            ? RiskLevel.CRITICAL
+            : state.activeHazardSimulation === 'PPE_VIOLATION' && z.id === 'ZONE-01'
+            ? RiskLevel.HIGH
+            : baseStatus;
 
         return {
           ...z,
@@ -135,7 +209,10 @@ function reducer(state: FactoryState, action: FactoryAction): FactoryState {
 
       if (action.hazard === 'FIRE') {
         audioAlert.playEmergencySiren();
-        const targetZone = state.zones.find((z) => z.id === 'ZONE-03') || state.zones[2];
+        const targetZone =
+          (action.targetZoneId && state.zones.find((z) => z.id === action.targetZoneId)) ||
+          state.zones.find((z) => z.id === 'ZONE-03') ||
+          state.zones[2];
 
         const updatedZones = state.zones.map((z) =>
           z.id === targetZone.id
@@ -211,7 +288,10 @@ function reducer(state: FactoryState, action: FactoryAction): FactoryState {
 
       if (action.hazard === 'SMOKE') {
         audioAlert.playEmergencySiren();
-        const targetZone = state.zones.find((z) => z.id === 'ZONE-04') || state.zones[3];
+        const targetZone =
+          (action.targetZoneId && state.zones.find((z) => z.id === action.targetZoneId)) ||
+          state.zones.find((z) => z.id === 'ZONE-04') ||
+          state.zones[3];
 
         const updatedZones = state.zones.map((z) =>
           z.id === targetZone.id
@@ -303,7 +383,16 @@ function reducer(state: FactoryState, action: FactoryAction): FactoryState {
           return w;
         });
 
-        const targetZone = state.zones[0];
+        const targetZone =
+          (action.targetZoneId && state.zones.find((z) => z.id === action.targetZoneId)) ||
+          state.zones[0];
+
+        const updatedZones = state.zones.map((z) =>
+          z.id === targetZone.id
+            ? { ...z, safetyStatus: RiskLevel.HIGH }
+            : z
+        );
+
         const alert: EmergencyAlert = {
           alertId: `ALERT-PPE-${Date.now().toString().slice(-4)}`,
           hazardType: 'PPE_VIOLATION',
@@ -336,11 +425,25 @@ function reducer(state: FactoryState, action: FactoryAction): FactoryState {
           ],
         };
 
+        const incident: Incident = {
+          incidentId: `INC-PPE-${Date.now().toString().slice(-4)}`,
+          workerId: 'TRK-101',
+          cameraId: targetZone.cameraId,
+          zoneId: targetZone.id,
+          violation: 'Missing Hard Hat & High-Vis Vest',
+          severity: RiskLevel.HIGH,
+          timestamp: nowIso,
+          status: IncidentStatus.OPEN,
+          confidence: 0.942,
+        };
+
         return {
           ...state,
+          zones: updatedZones,
           workers: modifiedWorkers,
           emergencyAlert: alert,
           activeHazardSimulation: 'PPE_VIOLATION',
+          incidents: [incident, ...state.incidents].slice(0, 60),
         };
       }
 

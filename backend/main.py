@@ -19,6 +19,26 @@ print("📦 Initializing SQLite Database (xguardian.db)...")
 init_db()
 print("✅ Database initialized successfully.")
 
+# Sync persisted cameras into stream_manager
+from app.database import SessionLocal
+from app.models.db_models import CameraDB
+from app.services.stream_manager import stream_manager
+
+_db_startup = SessionLocal()
+try:
+    for _cam in _db_startup.query(CameraDB).all():
+        if _cam.stream_url and _cam.stream_url != "demo":
+            stream_manager.register_camera(
+                camera_id=_cam.camera_id,
+                name=_cam.name,
+                zone_id=_cam.zone_id,
+                stream_url=_cam.stream_url,
+                fps=_cam.fps or 15,
+            )
+            print(f"📡 Restored active camera feed {_cam.camera_id}: {_cam.stream_url}")
+finally:
+    _db_startup.close()
+
 app = FastAPI(
     title="X-Guardian AI Vision & Database Service",
     description="Industrial safety control microservice with real-time YOLOv8 PPE detection and SQLite database",

@@ -314,6 +314,56 @@ def get_all_cameras(db: Session) -> List[CameraDB]:
     return db.query(CameraDB).all()
 
 
+def add_or_update_camera(
+    db: Session,
+    camera_id: str,
+    name: str,
+    zone_id: str = "ZONE-01",
+    feed_url: Optional[str] = None,
+    stream_url: Optional[str] = None,
+    resolution: str = "1920x1080",
+    fps: int = 15,
+) -> CameraDB:
+    existing = db.query(CameraDB).filter(CameraDB.camera_id == camera_id).first()
+    if existing:
+        existing.name = name
+        existing.zone_id = zone_id
+        if feed_url:
+            existing.feed_url = feed_url
+        if stream_url:
+            existing.stream_url = stream_url
+        existing.resolution = resolution
+        existing.fps = fps
+        existing.status = "ONLINE"
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    cam = CameraDB(
+        camera_id=camera_id,
+        name=name,
+        zone_id=zone_id,
+        feed_url=feed_url,
+        stream_url=stream_url,
+        resolution=resolution,
+        fps=fps,
+        status="ONLINE",
+    )
+    db.add(cam)
+    db.commit()
+    db.refresh(cam)
+    return cam
+
+
+def delete_camera_db(db: Session, camera_id: str) -> bool:
+    cam = db.query(CameraDB).filter(CameraDB.camera_id == camera_id).first()
+    if cam:
+        db.delete(cam)
+        db.commit()
+        return True
+    return False
+
+
 def get_all_workers(db: Session) -> List[WorkerDB]:
     return db.query(WorkerDB).all()
 

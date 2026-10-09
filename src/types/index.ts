@@ -76,8 +76,10 @@ export interface Camera {
   status: CameraStatus;
   name?: string;
   feedUrl?: string;
+  streamUrl?: string;
   resolution?: string;
   fps?: number;
+  isCustom?: boolean;
 }
 
 /** A safety incident recorded by the system */

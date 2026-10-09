@@ -5,8 +5,12 @@
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
+import EmergencyAlertModal from './EmergencyAlertModal';
+import { useFactory } from '../context/FactoryContext';
 
 export default function Layout() {
+  const { emergencyAlert, dismissAlert, orderEvacuation, acknowledgeAlert } = useFactory();
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <Sidebar />
@@ -16,6 +20,13 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+
+      <EmergencyAlertModal
+        alert={emergencyAlert}
+        onClose={dismissAlert}
+        onEvacuate={orderEvacuation}
+        onAcknowledge={acknowledgeAlert}
+      />
     </div>
   );
 }

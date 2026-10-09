@@ -14,7 +14,12 @@ import {
   Maximize2,
   Radio,
   Eye,
+  Plus,
+  Trash2,
+  Smartphone,
 } from 'lucide-react';
+import { VISION_BACKEND_URL } from '../services/visionService';
+import { useFactory } from '../context/FactoryContext';
 
 interface CCTVMatrixProps {
   cameras: Camera[];
@@ -22,6 +27,8 @@ interface CCTVMatrixProps {
   selectedCameraId?: string;
   onSelectCamera: (cameraId: string) => void;
   activeHazard?: 'FIRE' | 'SMOKE' | 'PPE_VIOLATION' | 'NONE';
+  onAddCameraClick?: () => void;
+  onDeleteCamera?: (cameraId: string) => void;
 }
 
 export default function CCTVMatrix({
@@ -29,10 +36,13 @@ export default function CCTVMatrix({
   zones,
   selectedCameraId,
   onSelectCamera,
-  activeHazard = 'NONE',
+  activeHazard,
+  onAddCameraClick,
+  onDeleteCamera,
 }: CCTVMatrixProps) {
   const [timecode, setTimecode] = useState<string>('');
-  const [simulatedHazard, setSimulatedHazard] = useState<'NONE' | 'FIRE' | 'PPE'>('NONE');
+  const { triggerHazard, activeHazardSimulation } = useFactory();
+  const currentHazard = activeHazard || activeHazardSimulation;
 
   useEffect(() => {
     const updateTime = () => {
@@ -58,22 +68,33 @@ export default function CCTVMatrix({
           </div>
           <div>
             <h2 className="text-base font-bold text-white tracking-wide">
-              Surveillance Grid Matrix (5-Channel CCTV Video Wall)
+              Surveillance Grid Matrix ({cameras.length}-Channel CCTV Video Wall)
             </h2>
             <p className="text-xs text-slate-400">
-              Simultaneous AI optical monitoring across all 5 industrial factory sectors
+              Simultaneous AI optical monitoring across all {cameras.length} factory surveillance channels
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 text-xs font-mono">
+        <div className="flex flex-wrap items-center gap-3 text-xs font-mono">
+          {onAddCameraClick && (
+            <button
+              type="button"
+              onClick={onAddCameraClick}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-sans font-semibold text-xs shadow-md shadow-blue-600/30 transition-all active:scale-95"
+            >
+              <Plus size={14} />
+              <span>Add IP / Mobile Cam</span>
+            </button>
+          )}
+
           <div className="flex items-center gap-1.5 text-slate-400 bg-slate-950 px-2.5 py-1 rounded-md border border-slate-800">
             <Radio size={12} className="text-blue-400 animate-pulse" />
             <span>UTC {timecode || 'LIVE'}</span>
           </div>
           <div className="flex items-center gap-2 text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 px-2.5 py-1 rounded-md">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-            <span>5/5 Channels Active • 30 FPS</span>
+            <span>{cameras.length}/{cameras.length} Channels Active • 30 FPS</span>
           </div>
         </div>
       </div>
@@ -87,9 +108,14 @@ export default function CCTVMatrix({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => setSimulatedHazard(simulatedHazard === 'FIRE' ? 'NONE' : 'FIRE')}
+            onClick={() =>
+              triggerHazard(
+                currentHazard === 'FIRE' ? 'ALL_CLEAR' : 'FIRE',
+                'ZONE-03'
+              )
+            }
             className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold border transition-all ${
-              simulatedHazard === 'FIRE'
+              currentHazard === 'FIRE'
                 ? 'border-red-500 bg-red-950 text-red-200 ring-2 ring-red-500/50 shadow-md shadow-red-950/50'
                 : 'border-red-900/60 bg-red-950/30 text-red-300 hover:border-red-600 hover:bg-red-900/50'
             }`}
@@ -100,9 +126,14 @@ export default function CCTVMatrix({
 
           <button
             type="button"
-            onClick={() => setSimulatedHazard(simulatedHazard === 'PPE' ? 'NONE' : 'PPE')}
+            onClick={() =>
+              triggerHazard(
+                currentHazard === 'PPE_VIOLATION' ? 'ALL_CLEAR' : 'PPE_VIOLATION',
+                'ZONE-01'
+              )
+            }
             className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold border transition-all ${
-              simulatedHazard === 'PPE'
+              currentHazard === 'PPE_VIOLATION'
                 ? 'border-amber-500 bg-amber-950 text-amber-200 ring-2 ring-amber-500/50 shadow-md shadow-amber-950/50'
                 : 'border-amber-900/60 bg-amber-950/30 text-amber-300 hover:border-amber-600'
             }`}
@@ -111,10 +142,10 @@ export default function CCTVMatrix({
             <span>⚠️ PPE Non-Compliance (CAM-01)</span>
           </button>
 
-          {simulatedHazard !== 'NONE' && (
+          {currentHazard !== 'NONE' && (
             <button
               type="button"
-              onClick={() => setSimulatedHazard('NONE')}
+              onClick={() => triggerHazard('ALL_CLEAR')}
               className="px-2.5 py-1 rounded-lg border border-slate-700 bg-slate-900 text-slate-400 hover:text-white text-xs font-mono"
             >
               Reset Feeds
@@ -131,28 +162,37 @@ export default function CCTVMatrix({
 
           // Determine simulated threat for each feed
           const isFireCam =
-            cam.cameraId === 'CAM-03' &&
-            (zone?.hasActiveFire || activeHazard === 'FIRE' || simulatedHazard === 'FIRE');
+            (cam.cameraId === 'CAM-03' && currentHazard === 'FIRE') ||
+            zone?.hasActiveFire === true;
           const isSmokeCam =
-            cam.cameraId === 'CAM-04' &&
-            (zone?.hasActiveSmoke || activeHazard === 'SMOKE');
+            (cam.cameraId === 'CAM-04' && currentHazard === 'SMOKE') ||
+            zone?.hasActiveSmoke === true;
           const isPPEViolCam =
-            cam.cameraId === 'CAM-01' &&
-            (activeHazard === 'PPE_VIOLATION' || simulatedHazard === 'PPE');
+            (cam.cameraId === 'CAM-01' && currentHazard === 'PPE_VIOLATION') ||
+            zone?.safetyStatus === 'HIGH';
           const isRestrictedCam = cam.cameraId === 'CAM-05';
+
+          const isStreamFeed = cam.feedUrl?.startsWith('/api/v1/stream') || cam.feedUrl?.startsWith('http');
+          const streamFullUrl = cam.feedUrl?.startsWith('/api/v1/stream')
+            ? `${VISION_BACKEND_URL}${cam.feedUrl}`
+            : cam.feedUrl;
 
           const feedImage = isFireCam
             ? '/images/fire_smoke_hazard.jpg'
-            : (cam.feedUrl ||
-               (cam.cameraId === 'CAM-01'
-                 ? '/images/cam01_entry.jpg'
-                 : cam.cameraId === 'CAM-02'
-                 ? '/images/cam02_assembly.jpg'
-                 : cam.cameraId === 'CAM-03'
-                 ? '/images/cam03_welding.jpg'
-                 : cam.cameraId === 'CAM-04'
-                 ? '/images/cam04_storage.jpg'
-                 : '/images/cam05_restricted.jpg'));
+            : (isStreamFeed
+                ? streamFullUrl
+                : (cam.feedUrl ||
+                   (cam.cameraId === 'CAM-01'
+                     ? '/images/cam01_entry.jpg'
+                     : cam.cameraId === 'CAM-02'
+                     ? '/images/cam02_assembly.jpg'
+                     : cam.cameraId === 'CAM-03'
+                     ? '/images/cam03_welding.jpg'
+                     : cam.cameraId === 'CAM-04'
+                     ? '/images/cam04_storage.jpg'
+                     : cam.cameraId === 'CAM-05'
+                     ? '/images/cam05_restricted.jpg'
+                     : '/images/cam01_entry.jpg')));
 
           return (
             <div
@@ -262,12 +302,28 @@ export default function CCTVMatrix({
 
               {/* Card Footer Bar */}
               <div className="px-3 py-2 bg-slate-900 flex items-center justify-between text-xs border-t border-slate-800/80">
-                <div className="truncate font-medium text-slate-200">
-                  {cam.name || `${zone?.name} Surveillance`}
+                <div className="truncate font-medium text-slate-200 flex items-center gap-1.5">
+                  {cam.isCustom && <Smartphone size={13} className="text-cyan-400 shrink-0" />}
+                  <span className="truncate">{cam.name || `${zone?.name} Surveillance`}</span>
                 </div>
-                <div className="text-[11px] font-mono text-blue-400 flex items-center gap-1">
-                  <span>SELECT</span>
-                  <Maximize2 size={11} />
+                <div className="flex items-center gap-2 shrink-0">
+                  {cam.isCustom && onDeleteCamera && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteCamera(cam.cameraId);
+                      }}
+                      className="p-1 rounded hover:bg-rose-900/60 text-slate-400 hover:text-rose-300 transition-colors"
+                      title="Remove Camera"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                  <div className="text-[11px] font-mono text-blue-400 flex items-center gap-1">
+                    <span>SELECT</span>
+                    <Maximize2 size={11} />
+                  </div>
                 </div>
               </div>
             </div>

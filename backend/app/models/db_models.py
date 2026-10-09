@@ -37,6 +37,7 @@ class CameraDB(Base):
     zone_id = Column(String(50), nullable=False)                  # e.g. ZONE-01
     name = Column(String(100), nullable=False)
     feed_url = Column(String(255), nullable=True)
+    stream_url = Column(String(500), nullable=True)
     resolution = Column(String(20), default="1920x1080")
     fps = Column(Integer, default=30)
     status = Column(String(20), default="ONLINE")                 # ONLINE, OFFLINE
